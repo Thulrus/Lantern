@@ -3,9 +3,9 @@
 import { border, bounds } from "./camera";
 import { musicGrid, songEvents } from "./music";
 import { resolveStyle } from "./styles";
-import { ASPECTS, type AudioEvent, type CaptionEvent, type LookId, type MediaAnalysis, type MusicAnalysis, type Project, type RenderSlide, type Slide, type Timeline } from "./types";
+import { depthProbe } from "$lib/analysis/depthmath";
+import { ASPECTS, type AudioEvent, type CaptionEvent, type MediaAnalysis, type MusicAnalysis, type Project, type RenderSlide, type Slide, type Timeline } from "./types";
 
-export const LOOK_INDEX: Record<LookId, number> = { photo: 0, hologram: 1, topo: 3, thermal: 4, engraving: 7 };
 const FILL_INDEX = { cover: 0, pair: 1, extend: 2, tilt: 3, blur: 4 } as const;
 
 export function compile(project: Project, analysis: Map<string, MediaAnalysis>, music: Map<string, MusicAnalysis>): Timeline {
@@ -54,8 +54,7 @@ export function compile(project: Project, analysis: Map<string, MediaAnalysis>, 
 const overlapOf = (s: Slide) => (s.transitionIn.type === "cut" ? 0 : s.transitionIn.dur);
 
 function renderSlide(s: Slide, analysis: Map<string, MediaAnalysis>, aspect: number, t0: number, t1: number, style: ReturnType<typeof resolveStyle>): RenderSlide {
-  const look = LOOK_INDEX[s.look] ?? 0;
-  const base: RenderSlide = { id: s.id, t0, t1, w: 16, h: 9, assets: {}, keys: s.treatment.keys, focus: s.treatment.focus, aim: s.treatment.aim, k: s.treatment.k ?? 0, pivot: s.treatment.pivot ?? 0.5, look, fill: FILL_INDEX[s.fill], grade: s.grade ?? 0 };
+  const base: RenderSlide = { id: s.id, t0, t1, w: 16, h: 9, assets: {}, keys: s.treatment.keys, focus: s.treatment.focus, aim: s.treatment.aim, k: s.treatment.k ?? 0, pivot: s.treatment.pivot ?? 0.5, fill: FILL_INDEX[s.fill] };
   if (s.kind === "title") {
     base.title = { text: s.caption?.text ?? "", style: "title", animation: style.titles.animation };
     base.keys = [{ t: 0, view: [0, 0, 1], cam: [0, 0, 0], f: 1, ds: 0 }];
@@ -78,7 +77,7 @@ function renderSlide(s: Slide, analysis: Map<string, MediaAnalysis>, aspect: num
   if (m.info.kind === "video") { base.assets.video = { hash: m.info.hash, kind: "video" }; base.clip = s.clip ? { in: s.clip.in, speed: s.clip.speed } : { in: 0, speed: 1 }; }
   if (m.depth) base.assets.maps = { hash: m.info.hash, kind: "maps" };
   const ia = m.info.w / m.info.h;
-  const bb = bounds(base.keys, base.k ?? 0, base.aim ?? [0, 0], base.pivot ?? 0.5, border(ia, null));
+  const bb = bounds(base.keys, base.k ?? 0, base.aim ?? [0, 0], base.pivot ?? 0.5, border(ia, m.depth ? depthProbe(m.depth) : null));
   base.bounds = bb;
   base.cover = [base.keys.some((k) => k.view[2] * aspect <= ia * 1.1), base.keys.some((k) => k.view[2] <= 1.1)];
   return base;

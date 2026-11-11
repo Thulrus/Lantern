@@ -16,17 +16,16 @@ export const TREATMENT_NAMES: Record<TreatmentId, string> = {
 /** Treatments that need a depth map; the planner only offers them when depth has arrived. */
 export const DEPTH_TREATMENTS = new Set<TreatmentId>(["depthPush", "arc", "crane", "inflate", "dollyZoom", "focusPull"]);
 
-export type TransitionId = "cut" | "crossfade" | "dipBlack" | "dipWhite" | "depthWipe" | "flyThrough" | "matchCut" | "push" | "whip" | "scan" | "morph";
+export type TransitionId = "cut" | "crossfade" | "dipBlack" | "dipWhite" | "depthWipe" | "flyThrough" | "matchCut" | "push" | "whip" | "morph";
 export const TRANSITION_NAMES: Record<TransitionId, string> = {
   cut: "Cut", crossfade: "Crossfade", dipBlack: "Dip to black", dipWhite: "Dip to white", depthWipe: "Depth wipe",
-  flyThrough: "Fly-through", matchCut: "Match cut", push: "Push", whip: "Whip", scan: "Scan reveal", morph: "Morph",
+  flyThrough: "Fly-through", matchCut: "Match cut", push: "Push", whip: "Whip", morph: "Morph",
 };
 export type FillId = "cover" | "pair" | "extend" | "tilt" | "blur";
-export type LookId = "photo" | "engraving" | "topo" | "thermal" | "hologram";
 export type OrderMode = "time" | "story" | "manual" | "shuffle";
 export type FitMode = "show-to-music" | "music-to-show" | "free";
 export type SlideKind = "photo" | "video" | "pair" | "grid" | "flipbook" | "title";
-export type LockField = "items" | "position" | "dur" | "treatment" | "fill" | "look" | "transition" | "caption";
+export type LockField = "items" | "position" | "dur" | "treatment" | "fill" | "transition" | "caption";
 
 /** One camera keyframe (spec §9.1). `t` is the slide-relative time in [0, 1]. */
 export interface CamKey { t: number; view: [number, number, number]; cam: [number, number, number]; f: number; ds: number }
@@ -57,7 +56,6 @@ export interface Slide {
   start: number; dur: number;     // seconds on the show clock
   treatment: Treatment;
   fill: FillId;
-  look: LookId; grade?: number;
   transitionIn: { type: TransitionId; dur: number };
   caption?: Caption;
   clip?: { in: number; out: number; speed: number; gain: number };
@@ -96,8 +94,6 @@ export interface Style {
   depthAmount: number;
   generativeFill: "off" | "margins" | "all";
   beatSync: "off" | "cuts" | "cuts+accents";
-  look: { default: LookId; mix?: Partial<Record<LookId, number>> };
-  grade?: { film: number };
   titles: { font: string; animation: "fade" | "rise" | "type" };
   crossfade: number;              // seconds, for shows without music
   panSpeed: number;               // max pan speed, screen heights per second
@@ -135,6 +131,18 @@ export type QualityFlag = "blurry" | "dark" | "blown" | "screenshot" | "tiny";
 
 export interface SaliencyResult { peaks: { box: Box; score: number }[]; center: [number, number] }
 
+/** Depth stage result (spec §4.3). The full map lives in OPFS (depth.u16.gz); `grid` is a coarse
+ *  8-bit copy for the planner. sep and pivot are in normalised inverse depth (1 = near). */
+export interface DepthInfo {
+  available: true;
+  w: number; h: number;           // map size
+  sep: number;                    // subject minus surroundings, median inverse depth
+  pivot: number;                  // subject depth (or the scene median)
+  quality: number;                // 0..1 relief; below ~0.3 the planner stays 2D
+  range: [number, number];        // raw disparity mapped to 0 and 1
+  grid: number[]; gridW: number; gridH: number;
+}
+
 export interface MediaAnalysis {
   info: MediaInfo;
   basics?: BasicsResult;
@@ -142,7 +150,7 @@ export interface MediaAnalysis {
   saliency?: SaliencyResult;
   embedding?: number[];
   tags?: Record<string, number>;
-  depth?: { available: true; sep: number; pivot: number; quality: number; range: [number, number] };
+  depth?: DepthInfo;
   personId?: string;              // identity cluster of the largest face
   videoScan?: VideoScan;
 }
@@ -185,7 +193,7 @@ export interface RenderSlide {
   aim?: [number, number]; k?: number; pivot?: number;
   bounds?: [number, number, number, number];
   cover?: [boolean, boolean];
-  look: number; fill: number; grade: number;
+  fill: number;
   enter?: { type: TransitionId; t0: number; t1: number; params?: Record<string, number> };
   cells?: { rect: [number, number, number, number]; slide: RenderSlide }[];
   clip?: { in: number; speed: number };

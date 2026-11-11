@@ -6,6 +6,7 @@ import { getFile } from "$lib/store/opfs";
 import { originalsDb } from "$lib/store/db";
 import { decodePhoto } from "$lib/media/decode";
 import type { Renderer } from "./renderer";
+import { decodeDepth, mapsImage } from "$lib/analysis/depthmath";
 
 const AHEAD = 3, BEHIND = 1;
 
@@ -18,11 +19,11 @@ export class AssetLoader {
 
   constructor(private r: Renderer, opts: { budget?: number } = {}) { this.budget = opts.budget ?? 24; }
 
-  private imagesOf(s: RenderSlide): { hash: string; video?: boolean }[] {
+  private imagesOf(s: RenderSlide): { hash: string; video?: boolean; maps?: boolean }[] {
     if (s.cells) return s.cells.flatMap((c) => this.imagesOf(c.slide));
-    const out: { hash: string; video?: boolean }[] = [];
+    const out: { hash: string; video?: boolean; maps?: boolean }[] = [];
     if (s.assets.video) out.push({ hash: s.assets.video.hash, video: true });
-    else if (s.assets.image) out.push({ hash: s.assets.image.hash });
+    else if (s.assets.image) out.push({ hash: s.assets.image.hash, maps: !!s.assets.maps });
     return out;
   }
 
@@ -30,16 +31,16 @@ export class AssetLoader {
   async ensure(tl: Timeline, t: number): Promise<boolean> {
     const i = tl.layers.findIndex((l) => t < l.t1);
     const idx = i < 0 ? tl.layers.length - 1 : i;
-    const wanted: { hash: string; video?: boolean }[] = [];
+    const wanted: { hash: string; video?: boolean; maps?: boolean }[] = [];
     for (let k = Math.max(0, idx - BEHIND); k <= Math.min(tl.layers.length - 1, idx + AHEAD); k++) wanted.push(...this.imagesOf(tl.layers[k]));
     const now = tl.layers.filter((l) => t >= l.t0 && t < l.t1).flatMap((l) => this.imagesOf(l));
-    const jobs = wanted.map((w) => this.load(w.hash, !!w.video));
+    const jobs = wanted.map((w) => Promise.all([this.load(w.hash, !!w.video), w.maps ? this.loadMaps(w.hash) : undefined]));
     const keep = new Set(wanted.map((w) => w.hash));
     for (const k of this.r.keys()) {
-      if (keep.has(k) || keep.has(k.replace(/^v:/, "")) || k.startsWith("maps:")) continue;
-      if (this.order.length > this.budget) { this.r.drop(k); this.order = this.order.filter((x) => x !== k); }
+      if (keep.has(k) || keep.has(k.replace(/^(v|maps):/, ""))) continue;
+      if (this.order.length > this.budget) { this.r.drop(k); this.r.drop("maps:" + k); this.order = this.order.filter((x) => x !== k); }
     }
-    await Promise.all(now.map((w) => this.load(w.hash, !!w.video)));
+    await Promise.all(now.map((w) => Promise.all([this.load(w.hash, !!w.video), w.maps ? this.loadMaps(w.hash) : undefined])));
     void jobs;
     return now.every((w) => this.r.has(w.hash) || this.r.has("v:" + w.hash) || this.failed.has(w.hash));
   }
@@ -71,6 +72,28 @@ export class AssetLoader {
       }
     })();
     this.loading.set(hash, p);
+    return p;
+  }
+
+  /** The depth maps texture for a photo, from /m/<hash>/depth.u16.gz; a missing file leaves the slide flat. */
+  loadMaps(hash: string): Promise<void> {
+    const key = "maps:" + hash;
+    if (this.r.has(key) || this.failed.has(key)) return Promise.resolve();
+    let p = this.loading.get(key);
+    if (p) return p;
+    p = (async () => {
+      try {
+        const blob = await getFile(hash, "depth.u16.gz");
+        if (!blob) throw new Error("no depth file");
+        const d = await decodeDepth(blob);
+        this.r.upload(key, mapsImage(d.u16, d.w, d.h), false);
+      } catch {
+        this.failed.add(key);
+      } finally {
+        this.loading.delete(key);
+      }
+    })();
+    this.loading.set(key, p);
     return p;
   }
 

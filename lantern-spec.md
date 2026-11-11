@@ -84,6 +84,8 @@ picture:
 - RAW photos.
 - A bundled music library. Users bring their own songs (a few CC0 demo tracks are fine, §15).
 - Generative imagery of any kind beyond background fill.
+- Creative looks, filters or grades. Photos are shown as themselves (owner decision, 2026-11-10:
+  the stylised looks were tried and dropped; nobody wanted them).
 
 ## 2. Is GitHub Pages possible? Yes.
 
@@ -235,7 +237,7 @@ compatibility and size.
 | Face identity | SFace (Apache-2.0, OpenCV zoo) | none (no People feature) | Flicker found YuNet+SFace weaker than SCRFD+ArcFace; good enough for "group these faces", with user merge and split. |
 | Pose | RTMPose or RTMO (Apache-2.0) ONNX | MediaPipe Pose Landmarker | Flicker's RTMW-x is heavy; a lighter body-only model is enough here. |
 | Subject matte | BiRefNet-lite (MIT), full tier | MediaPipe selfie / multiclass segmenter; MODNet (Apache-2.0) for portraits | BiRefNet-lite took ~450 ms per image on an RTX 3060 in Flicker; in a browser expect several times slower [verify]. Avoid RMBG weights (non-commercial). |
-| Depth | Depth Anything V2 **Small** (Apache-2.0; Base and Large are CC-BY-NC, so do not use them) | the same model at a smaller input size | Flicker: Small was as good as Base. |
+| Depth | Depth Anything V2 **Small** (Apache-2.0; Base and Large are CC-BY-NC, so do not use them). Built: the 8-bit ONNX export from `onnx-community` (27 MB, SHA-256 pinned) on ONNX Runtime Web's WASM provider, short edge 518 px | the same model at 392 px | Flicker: Small was as good as Base. WebGPU provider with the fp16 export is a later speed-up. |
 | Background fill | MI-GAN (mobile inpainting, 512 px) [verify license] | LaMa big (Apache-2.0, 208 MB, full tier only) | Flicker used LaMa for plates and margins successfully. MI-GAN is far smaller; compare their quality on margins in Phase 0. Classical push-pull fill (Flicker `layers.py`) is the no-model fallback. |
 | Embedding | CLIP ViT-B/32 image tower (MIT), quantized | none (order by time only) | Flicker used ViT-L/14 (98% usable); B/32 is the browser-sized compromise. MobileCLIP is an option if its license allows [verify]. |
 | Saliency | U²-Net-p (Apache-2.0, ~5 MB) | spectral-residual saliency (classical, no model) | |
@@ -386,7 +388,7 @@ Turns desired durations into actual cut times on the music's beat grid.
 - Without music, cut times come from desired durations directly (optionally on a tempo grid
   from the style).
 
-### 5.6 Pass 6: treatment (motion, fill, look)
+### 5.6 Pass 6: treatment (motion, fill)
 
 For each slide, every treatment has a **suitability score** from 0 to 1, computed from analysis
 features. The planner chooses by weighted random draw (seeded) over `suitability × style
@@ -423,11 +425,9 @@ face fits with headroom), *Pair* (§5.3), *Extend* (outpainted margins, generati
 on sides the subject does not touch), *Tilt* (pan along the long axis), and *Blur* (a blurred,
 darkened copy of the photo behind it, Flicker's letterbox fill, always available).
 
-**Look** (creative style, off by default except in the "Dreamlike" style):
-Photo, plus a small pack ported from Flicker's depth looks that keep the photo legible:
-*Engraving* (ink lines that wrap the surface), *Topo* (flowing depth contours over the photo;
-Flicker's owner's favourite), *Thermal* (colour by depth), *Hologram*. A global *Film* grade
-(grain, vignette, slight halation, gentle tone curve) is available on any look.
+**No looks or grades.** Every slide shows the photo's own pixels, unchanged in colour and
+tone. Earlier builds carried a pack of creative looks (Topo, Engraving, Thermal, Hologram) and a
+film grade; they were removed on 2026-11-10 (§1.3).
 
 ### 5.7 Pass 7: transitions
 
@@ -441,7 +441,6 @@ Flicker's owner's favourite), *Thermal* (colour by depth), *Hologram*. A global 
 | Match cut | consecutive photos with faces: align the main faces (eyes) between the two frames, then cut or crossfade so the face holds its place on screen |
 | Push / slide | 2D, in Upbeat only |
 | Whip | a fast motion-blurred pan, on strong accents |
-| Scan reveal | the next photo appears as its glowing depth map, then a scan plane sweeps it into the photo (Flicker). Creative styles only. |
 | Morph | same identity only, opt-in (§1.2) |
 
 Selection: major transitions (dip, fly-through, inflate entry, whip) go on section boundaries
@@ -489,8 +488,6 @@ interface Style {
   depthAmount: number;       // scales amplitude; Flicker's ds/gain
   generativeFill: 'off' | 'margins' | 'all';
   beatSync: 'off' | 'cuts' | 'cuts+accents';
-  look: { default: LookId; mix?: Record<LookId, number> };
-  grade?: { film: number };
   titles: { font: string; animation: 'fade' | 'rise' | 'type' };
 }
 ```
@@ -499,10 +496,9 @@ interface Style {
 |---|---|
 | **Classic** | 2D Ken Burns and crossfades only. Safe, timeless. |
 | **Gentle** | slow, warm, long crossfades, subtle 3D. For memorials and family. |
-| **Cinematic** | strong 3D (arcs, cranes, fly-throughs), film grade, transitions on sections. |
+| **Cinematic** | strong 3D (arcs, cranes, fly-throughs), bold moves, transitions on sections. |
 | **Upbeat** | short beats, cuts on beats, whip and push transitions, grid reveals, accents. |
 | **Travel** | chapter cards by day and place, establishing shots first, depth pushes into landscapes. |
-| **Dreamlike** | creative looks (Topo, Engraving, Hologram) mixed in, scan reveals. |
 
 ## 6. Music
 
@@ -609,7 +605,9 @@ OPFS
 ```
 
 Canvas cannot encode 16-bit PNG, so depth is stored as raw `Uint16Array`, gzipped with
-`CompressionStream`. Request persistent storage (`navigator.storage.persist()`) and show usage
+`CompressionStream`: an 8-byte header (`LDP1` magic, u16 width, u16 height, little-endian) then
+row-major samples, inverse depth with 65535 = nearest. The analysis record keeps the planner's
+summary (separation, pivot, quality, a 32 × 32 probe grid) so planning never reads the file. Request persistent storage (`navigator.storage.persist()`) and show usage
 and quota in Settings, with "Clear analysis cache" per project and globally.
 
 **Project files**: export and import a `.lantern` package (a zip): the project JSON, optionally
@@ -641,11 +639,10 @@ interface Slide {
   start: number; dur: number;         // seconds on the show clock
   treatment: Treatment;               // §9.1 camera keys etc.
   fill: 'cover' | 'pair' | 'extend' | 'tilt' | 'blur';
-  look: LookId; grade?: number;
   transitionIn: { type: TransitionId; dur: number };
   caption?: Caption;
   clip?: { in: number; out: number; speed: number; gain: number };
-  locks: Partial<Record<'items' | 'position' | 'dur' | 'treatment' | 'fill' | 'look' | 'transition' | 'caption', true>>;
+  locks: Partial<Record<'items' | 'position' | 'dur' | 'treatment' | 'fill' | 'transition' | 'caption', true>>;
   auto: { reasons: string[]; alternates: Treatment[]; quality: 'draft' | 'full' };
 }
 ```
@@ -676,7 +673,7 @@ interface RenderSlide {
   keys: { t: number; view: [number, number, number]; cam: [number, number, number]; f: number; ds: number }[];
   focus?: { t: number; d: number; amt: number }[];
   aim?: [number, number]; k?: number; border?: Border; ext?: [number, number, number, number];
-  look: number; fill: number; grade: number;
+  fill: number;
   enter?: { type: TransitionId; t0: number; t1: number; params?: Record<string, number> };
   cells?: { rect: [number, number, number, number]; slide: RenderSlide }[]; // pair/grid
 }
@@ -726,8 +723,8 @@ one-off parity script, not a shipped test.
 
 ### 9.3 Determinism
 
-- No wall clock, no `Math.random` in drawing. Any animated noise (film grain, flicker in looks)
-  is a function of show time and slide id.
+- No wall clock, no `Math.random` in drawing. Anything animated is a function of show time
+  and slide id.
 - The preview may skip frames; the export renders every frame at exactly `n / fps`.
 - A preview frame and an export frame at the same `t` must match within a small per-pixel
   tolerance (golden test, §12).
@@ -795,8 +792,8 @@ Also exportable: the current frame as a JPEG, and the project package (§8.1).
 ```
 
 - **Storyboard**: slide cards in order with thumbnails, duration, treatment icon, lock icons and
-  analysis dots. Drag to reorder, multi-select, and batch-apply duration, treatment, transition
-  or look.
+  analysis dots. Drag to reorder, multi-select, and batch-apply duration, treatment or
+  transition.
 - **Timeline**: time-proportional slide blocks over the song waveform with beat ticks, bar
   numbers and section bands. Drag a block edge to change a duration (ripple; snaps to beats
   when beat sync is on; Alt to snap freely). Transition handles between blocks set the
@@ -810,7 +807,7 @@ Also exportable: the current frame as a JPEG, and the project package (§8.1).
     the photo with start and end rectangles to drag (and tour stops); *3D amount* (depth scale)
     for depth treatments; *Focus* point (click in the photo).
   - Fill: Cover, Pair, Extend, Tilt or Blur, with "Show generated pixels".
-  - Look and grade. Transition in. Caption (text, position, style, timing). Clip trim and gain
+  - Transition in. Caption (text, position, style, timing). Clip trim and gain
     for videos.
   - **Try another**: cycles the planner's alternates. **Why?**: the planner's reasons.
 - **Inspector, show**: style, pace, order mode, featured person, beat sync, fit mode, 3D
@@ -869,10 +866,10 @@ Each milestone ends with something a person can try on the deployed Pages site.
 | **M2** | **Music** | Song import, analysis, editor display and correction; music fit (pass 5); several songs with crossfades; mix in preview. |
 | **M3** | **Editor** | Storyboard, timeline, inspector, framing editor, locks, alternates, re-roll, undo, autosave, project packages. |
 | **M4** | **Export** | The export pipeline, codec fallbacks, progress, golden-frame and sync tests. |
-| **M5** | **Depth Space** | Depth and matte stages, two-layer meshes, depth treatments, depth wipe, fly-through, disc DOF, upgrade-in-place. |
+| **M5** | **Depth Space** | Depth and matte stages, two-layer meshes, depth treatments, depth wipe, fly-through, disc DOF, upgrade-in-place. Depth stage, single-layer mesh displacement, depth treatments and upgrade-in-place built 2026-11-10; mattes, two layers, depth transitions and disc DOF remain. |
 | **M6** | **Fills** | Plates, margins, person guard, Extend fill, pairs and grids, "show generated pixels". |
 | **M7** | **Video** | Video scan, highlight picking, clip slides, ducking, frame-accurate export decode. |
-| **M8** | **Polish** | People and featured person, chapters and titles, all style presets, creative looks, flipbooks, PWA offline, mobile layout, accessibility pass. |
+| **M8** | **Polish** | People and featured person, chapters and titles, all style presets, flipbooks, PWA offline, mobile layout, accessibility pass. |
 
 ### 13.1 M0 results (2026-11-10, first build session)
 
@@ -884,8 +881,9 @@ list stays open.
 |---|---|
 | Face detection | MediaPipe Face Detector (short range, Apache-2.0, 230 KB, SHA-256 pinned in `src/lib/models/registry.ts`) runs in the analysis worker with a tiled second pass; 23 of 23 test photos analysed, 8 faces found in a 8-person group shot. **Caveat:** MediaPipe loads its WASM glue with `importScripts`, so the worker must be a classic (iife) worker; Vite's dev server forces module workers, where Lantern falls back to the main thread. CORS from `storage.googleapis.com` is fine; weights should still move to a project-owned Hugging Face repo (§2.1), and the CSP currently allows both hosts. |
 | Beat tracking | Classical DSP (log-mel flux → tempogram → Ellis DP → downbeat phase → Foote sections) on a 128 BPM click track: tempo within 0.4 %, > 85 % of beats within 20 ms after calibrating the onset frame to the window tail, section boundary within one bar of a timbre change. 60 s of audio analyses in well under a second in a worker. Real-song accuracy (§6.2 targets) is **not yet measured**. Real song (2026-11-10, after the long-song fix): a 4-minute MP3 excerpt analysed in about 2 s in headless Chromium (84 BPM; accuracy still unmeasured against annotations); a 30-minute synthetic track in 7 s with under 30 MB extra memory. |
-| Renderer | Single WebGL2 path for preview and export (`src/lib/render/renderer.ts`): depth-displaced mesh with a flat stand-in map, letterbox fill, crossfade / dip / push / whip in a composite pass, captions, film grade. 13–23 fps on SwiftShader at 1080p-class canvas; needs measuring on a GPU. |
+| Renderer | Single WebGL2 path for preview and export (`src/lib/render/renderer.ts`): depth-displaced mesh with a flat stand-in map, letterbox fill, crossfade / dip / push / whip in a composite pass, captions. 13–23 fps on SwiftShader at 1080p-class canvas; needs measuring on a GPU. |
 | Export | WebCodecs via Mediabunny: a 24 s 1080p30 show → MP4 (H.264 + Opus, 17 MB) in 82 s on software encode; ffprobe reports 720 frames, 24.000 s, both streams present. AAC was not available in headless Chromium (Opus in MP4 was chosen automatically). Save picker streaming works in Chromium; a download fallback exists. **Not yet tested:** QuickTime/VLC/phone playback, A/V sync measurement, Firefox and Safari. |
+| Depth | Depth Anything V2 Small, 8-bit ONNX (27 MB, SHA-256 pinned), on ONNX Runtime Web's WASM provider with threads, bundled into the classic analysis worker (`onnxruntime-web/wasm`, no dynamic import). Headless Chromium on the CPU: session init 1 s, 3.3–4.2 s per photo at 770 × 518, 23 of 23 test photos analysed, 2.7 s on the bench after warm-up. Maps are 8-bit in the renderer's texture (RG = depth, no matte yet). The `quality` relief measure saturates at 1.0 on every real test photo and gives 0.43 on a synthetic gradient scene: it separates flat documents from scenes but is **[verify]** as a 3D-worthiness gate. WebGPU provider not tried yet. |
 | Pages isolation | The service worker (`public/sw.js`) adds COOP/COEP (`credentialless`) and caches the app shell; the app reloads once after first activation. The WASM path is single-threaded without it. **Not yet verified on the deployed site** (nothing is deployed yet). |
 | OPFS and IndexedDB | Proxies (2560 px), analysis images (1024 px) and thumbnails (320 px) in OPFS, records and analysis in IndexedDB, originals kept in IndexedDB when no directory handle exists. Import of 23 photos plus a song and the full plan completes in about 10 s in the headless run. |
 
@@ -900,7 +898,7 @@ for Lantern; drop everything listed under "leave behind".
 | Flicker source | Take | Leave behind |
 |---|---|---|
 | `src/flicker/planner/stills.py` | the camera model, `choreograph` and `_layout` (move shapes and amplitudes), `_border`, `_bounds`, `clamp_view`, `_inside`, `aim_rotation`, `project`, figure separation as an amplitude control, tour stops | NudeNet regions as tour stops (`TOUR_SKIP`, `_spot`); embedding-neighbourhood "next photo" (Lantern orders by its own passes) |
-| `client/src/lib/stills.ts` | two-layer meshes, `aimRotation`, `liveBounds`, `clampView`, tight-alpha blend, DOF, depth wipe, scan reveal, crossfade via FBO, Topo / Engraving / Thermal / Hologram shaders, `Renderer.zoom` | breath (it warps the body), Slice, Pulse, Blinds, Projector, Splats and Scatter, stereo, look-around and tilt (Lantern is a video, not a toy) |
+| `client/src/lib/stills.ts` | two-layer meshes, `aimRotation`, `liveBounds`, `clampView`, tight-alpha blend, DOF, depth wipe, crossfade via FBO, `Renderer.zoom` | scan reveal and the Topo / Engraving / Thermal / Hologram shaders (ported, then dropped: Lantern shows photos as they are, §1.3), breath (it warps the body), Slice, Pulse, Blinds, Projector, Splats and Scatter, stereo, look-around and tilt (Lantern is a video, not a toy) |
 | `client/src/lib/gl.ts`, `lib/delaunay.ts` | blurred letterbox fill, mesh warp (for same-person morphs), `rect` and scissoring for pairs and grids | Pose Flow specifics |
 | `src/flicker/layers.py` | grown and feathered subject alpha, push-pull fill, plate composition, relief and normal maps | — |
 | `src/flicker/analyzers/inpaint.py`, `PlateStage` | hole construction, mirrored context and mask, plate depth fit, margins on open sides, windowed outpainting, the person guard | — |

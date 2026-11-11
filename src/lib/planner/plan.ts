@@ -3,6 +3,7 @@
 // unlocked fields of existing slides (spec §8.2).
 import { clamp, fmtClock, type Box } from "$lib/util/math";
 import { Prng, hash32 } from "$lib/util/prng";
+import { depthProbe } from "$lib/analysis/depthmath";
 import { curate } from "./curate";
 import { desiredDuration, treatmentMinimum } from "./durations";
 import { fitToBeats, snapToBeats } from "./fit";
@@ -12,7 +13,7 @@ import { musicGrid, type MusicGrid } from "./music";
 import { order } from "./order";
 import { resolveStyle } from "./styles";
 import { chooseTransition } from "./transitions";
-import { ASPECTS, DEPTH_TREATMENTS, TREATMENTS, TREATMENT_NAMES, type LookId, type MediaAnalysis, type MusicAnalysis, type Project, type Slide, type Style, type Treatment, type TreatmentId } from "./types";
+import { ASPECTS, DEPTH_TREATMENTS, TREATMENTS, TREATMENT_NAMES, type MediaAnalysis, type MusicAnalysis, type Project, type Slide, type Style, type Treatment, type TreatmentId } from "./types";
 
 export interface PlanResult {
   slides: Slide[];
@@ -173,7 +174,6 @@ export function plan(project: Project, analysis: Map<string, MediaAnalysis>, mus
   const slides: Slide[] = [];
   const beatLen = grid?.beatLen ?? style.pace.base / 4;
   let prevType: Slide["transitionIn"]["type"] | undefined;
-  const looks = pickLooks(style, rng, units.length);
   units.forEach((u, i) => {
     const id = slideIds[i];
     const old = prior.get(id);
@@ -208,10 +208,8 @@ export function plan(project: Project, analysis: Map<string, MediaAnalysis>, mus
     const trDur = Math.min(tr.dur, maxTr);
     reasons.push(`${tr.type} (${tr.reason})`);
     const fill = keepLocks && old?.locks.fill ? old.fill : u.kind === "pair" ? "pair" : m && Math.abs(m.info.w / m.info.h / aspect - 1) > 0.25 ? (u.kind === "video" ? "blur" : treatment.id === "pan" ? "tilt" : "blur") : "cover";
-    const look: LookId = keepLocks && old?.locks.look ? old.look : looks[i];
     const slide: Slide = {
-      id, kind: isTitle ? "title" : u.kind, items: u.items, start, dur, treatment, fill, look,
-      grade: style.grade?.film ?? 0,
+      id, kind: isTitle ? "title" : u.kind, items: u.items, start, dur, treatment, fill,
       transitionIn: { type: tr.type, dur: trDur },
       caption: keepLocks && old?.locks.caption ? old.caption : isTitle ? { text: u.chapter === -1 ? project.titles.intro! : project.titles.end!, position: "center", style: "title" } : chapterStarts.has(i) && project.titles.chapters ? { text: chapterText(m), position: "bottom", style: "chapter", from: 0, to: Math.min(dur, 3.5) } : undefined,
       clip: u.kind === "video" && m?.info.duration ? clipPick(m, dur) : undefined,
@@ -236,7 +234,7 @@ export function motionInput(m: MediaAnalysis, aspect: number, outHeight: number,
   const peaks = (m.saliency?.peaks ?? []).map((p) => p.box);
   return {
     w: m.info.w, h: m.info.h, aspect, faces, pois: pointsOfInterest(faces, peaks),
-    depth: m.depth ? { sep: m.depth.sep, pivot: m.depth.pivot, quality: m.depth.quality } : undefined,
+    depth: m.depth ? { sep: m.depth.sep, pivot: m.depth.pivot, quality: m.depth.quality, depthAt: depthProbe(m.depth) } : undefined,
     dur, panSpeed: style.panSpeed, resolutionScale: m.info.h / outHeight,
   };
 }
@@ -267,19 +265,6 @@ function nearestBeat(beats: number[], t: number): number {
   let bi = 0, bd = Infinity;
   for (let i = 0; i < beats.length; i++) { const d = Math.abs(beats[i] - t); if (d < bd) { bd = d; bi = i; } }
   return bi;
-}
-
-function pickLooks(style: Style, rng: Prng, n: number): LookId[] {
-  const mix = style.look.mix;
-  if (!mix) return Array(n).fill(style.look.default);
-  const ids = Object.keys(mix) as LookId[], ws = ids.map((k) => mix[k] ?? 0);
-  const out: LookId[] = [];
-  for (let i = 0; i < n; i++) {
-    let l = ids[rng.weighted(ws)];
-    if (i > 0 && l !== "photo" && out[i - 1] !== "photo") l = "photo"; // creative looks never twice in a row
-    out.push(l);
-  }
-  return out;
 }
 
 /** Clip length for a video unit: style-based, longer when speech is present (spec §7). */

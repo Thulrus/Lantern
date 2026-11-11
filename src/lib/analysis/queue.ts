@@ -4,25 +4,31 @@
 import { BASICS_VERSION } from "./basics";
 import { FACES_MODEL, FACES_VERSION, detectFaces, loadFaceDetector } from "./faces";
 import { SALIENCY_VERSION } from "./saliency";
+import { DEPTH_EDGE_FULL, DEPTH_EDGE_LITE, DEPTH_MODEL, DEPTH_VERSION } from "./depth";
+import { subjectRegion } from "./depthmath";
+import { quickTier } from "$lib/media/tier";
 import { decodePhoto } from "$lib/media/decode";
 import { analysisDb, mediaDb, originalsDb, type AnalysisRecord } from "$lib/store/db";
 import { getFile, putFile } from "$lib/store/opfs";
-import type { BasicsResult, FaceResult, MediaAnalysis, SaliencyResult } from "$lib/planner/types";
+import type { BasicsResult, DepthInfo, FaceResult, MediaAnalysis, SaliencyResult } from "$lib/planner/types";
 import AnalysisWorker from "../../workers/analysis.worker?worker";
 
-export type StageId = "basics" | "faces";
+export type StageId = "basics" | "faces" | "depth";
 export const STAGES: { id: StageId; version: number; model: string; requires: StageId[]; priority: number }[] = [
   { id: "basics", version: BASICS_VERSION * 100 + SALIENCY_VERSION, model: "classical", requires: [], priority: 0 },
   { id: "faces", version: FACES_VERSION, model: FACES_MODEL, requires: ["basics"], priority: 1 },
+  { id: "depth", version: DEPTH_VERSION, model: DEPTH_MODEL, requires: ["basics", "faces"], priority: 2 },
 ];
 
 export interface StageStatus { hash: string; stage: StageId; status: "queued" | "running" | "ok" | "error" | "skipped"; error?: string }
 type Listener = (s: StageStatus) => void;
 
 interface Pending { hash: string; stage: StageId; priority: number; seq: number }
+/** `resident`: the model stages this worker has loaded, so jobs prefer a worker that already holds their model. */
+type WorkerRec = { w: Worker; busy: boolean; resident: Set<StageId> };
 
 export class AnalysisQueue {
-  private workers: { w: Worker; busy: boolean; faces: boolean }[] = [];
+  private workers: WorkerRec[] = [];
   private pending: Pending[] = [];
   private seq = 0;
   private listeners = new Set<Listener>();
@@ -33,6 +39,8 @@ export class AnalysisQueue {
   private paused = false;
   private base: string;
   modelProgress = 0;
+  /** Model input short edge for depth: smaller on the lite tier (spec §2.2). */
+  private depthEdge = quickTier() === "lite" ? DEPTH_EDGE_LITE : DEPTH_EDGE_FULL;
   // Vite's dev server forces module workers, where MediaPipe's importScripts loader cannot run:
   // faces run on the main thread in dev (the worker is used in production builds).
   private mainThreadFaces = import.meta.env.DEV;
@@ -42,7 +50,7 @@ export class AnalysisQueue {
     const n = Math.max(1, Math.min(opts.workers ?? Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)), 4));
     for (let i = 0; i < n; i++) {
       const w = new AnalysisWorker();
-      const rec = { w, busy: false, faces: false };
+      const rec: WorkerRec = { w, busy: false, resident: new Set() };
       w.onmessage = (e: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: number }>) => {
         const p = this.waiting.get(e.data.id);
         if (!p) return;
@@ -87,8 +95,11 @@ export class AnalysisQueue {
     for (const w of this.workers) {
       if (w.busy || !this.pending.length) continue;
       this.pending.sort((a, b) => a.priority - b.priority || a.seq - b.seq);
-      // A worker that has the face model resident prefers face jobs, and vice versa.
-      let idx = this.pending.findIndex((p) => this.ready(p) && (w.faces ? p.stage === "faces" : p.stage !== "faces"));
+      // A worker that has a model resident prefers that model's jobs; a fresh worker takes
+      // anything, but leaves model stages to a worker that already holds the model if one exists.
+      const holder = (st: StageId) => this.workers.some((o) => o !== w && o.resident.has(st));
+      let idx = this.pending.findIndex((p) => this.ready(p) && w.resident.has(p.stage));
+      if (idx < 0) idx = this.pending.findIndex((p) => this.ready(p) && (p.stage === "basics" || !holder(p.stage)));
       if (idx < 0) idx = this.pending.findIndex((p) => this.ready(p));
       if (idx < 0) return;
       const job = this.pending.splice(idx, 1)[0];
@@ -99,7 +110,7 @@ export class AnalysisQueue {
 
   private ready(p: Pending): boolean {
     const st = STAGES.find((s) => s.id === p.stage)!;
-    return st.requires.every((r) => this.done.get(`${p.hash}|${r}`)?.status === "ok");
+    return st.requires.every((r) => { const d = this.done.get(`${p.hash}|${r}`)?.status; return d === "ok" || d === "skipped"; });
   }
 
   private call<T>(w: { w: Worker }, msg: Record<string, unknown>, transfer: Transferable[] = [], progress?: (p: number) => void): Promise<T> {
@@ -110,7 +121,7 @@ export class AnalysisQueue {
     });
   }
 
-  private async run(w: { w: Worker; busy: boolean; faces: boolean }, p: Pending): Promise<void> {
+  private async run(w: WorkerRec, p: Pending): Promise<void> {
     const key = `${p.hash}|${p.stage}`;
     this.running.add(key);
     this.emit({ hash: p.hash, stage: p.stage, status: "running" });
@@ -120,18 +131,29 @@ export class AnalysisQueue {
       if (cached && cached.version === st.version && cached.status === "ok") { this.emit({ hash: p.hash, stage: p.stage, status: "ok" }); return; }
       const rec = await mediaDb.get(p.hash);
       if (!rec) throw new Error("media record missing");
-      if (rec.info.kind === "video" && st.id === "faces") { this.emit({ hash: p.hash, stage: p.stage, status: "skipped" }); return; }
+      if (rec.info.kind === "video" && st.id !== "basics") { this.emit({ hash: p.hash, stage: p.stage, status: "skipped" }); return; }
       let result: unknown;
       if (st.id === "basics") {
         const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp")) ?? (await originalsDb.get(p.hash));
         if (!blob) throw new Error("no image data to analyse");
         const bmp = await decodePhoto(blob);
         result = await this.call<{ basics: BasicsResult; saliency: SaliencyResult }>(w, { kind: "basics", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, outHeight: 1080, name: rec.info.name, makeProxies: false }, [bmp]);
+      } else if (st.id === "depth") {
+        const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp"));
+        if (!blob) throw new Error("no proxy to analyse");
+        const prior = await loadAnalysis(p.hash);
+        const faces = (prior?.faces ?? []).filter((f) => f.score >= 0.5).map((f) => f.box);
+        const subject = subjectRegion(faces, (prior?.saliency?.peaks ?? []).map((x) => x.box), rec.info.w, rec.info.h);
+        const bmp = await decodePhoto(blob);
+        w.resident.add("depth");
+        const r = await this.call<{ depth: Omit<DepthInfo, "available">; file: Blob; ms: number }>(w, { kind: "depth", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base, edge: this.depthEdge, subject }, [bmp], (pr) => { this.modelProgress = pr; });
+        await putFile(p.hash, "depth.u16.gz", r.file);
+        result = { depth: r.depth, ms: r.ms };
       } else {
         const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp"));
         if (!blob) throw new Error("no proxy to analyse");
         const bmp = await decodePhoto(blob);
-        w.faces = true;
+        w.resident.add("faces");
         if (this.mainThreadFaces) result = await this.facesOnMain(bmp, rec.info.w);
         else {
           try {
@@ -183,7 +205,7 @@ export class AnalysisQueue {
     return { faces };
   }
 
-  private free(): Promise<{ w: Worker; busy: boolean; faces: boolean }> {
+  private free(): Promise<WorkerRec> {
     return new Promise((res) => {
       const tick = () => { const f = this.workers.find((w) => !w.busy); if (f) res(f); else setTimeout(tick, 30); };
       tick();
@@ -202,6 +224,7 @@ export async function loadAnalysis(hash: string): Promise<MediaAnalysis | null> 
     if (r.status !== "ok") continue;
     if (r.stage === "basics") { const x = r.result as { basics: BasicsResult; saliency: SaliencyResult }; out.basics = x.basics; out.saliency = x.saliency; }
     if (r.stage === "faces") out.faces = (r.result as { faces: FaceResult[] }).faces;
+    if (r.stage === "depth") out.depth = { available: true, ...(r.result as { depth: Omit<DepthInfo, "available"> }).depth };
   }
   return out;
 }

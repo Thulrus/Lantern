@@ -5,7 +5,7 @@
   import Framing from "./Framing.svelte";
   import { app } from "$lib/store/project.svelte";
   import { STYLES } from "$lib/planner/styles";
-  import { ASPECTS, DEPTH_TREATMENTS, TRANSITION_NAMES, TREATMENTS, TREATMENT_NAMES, type Aspect, type FillId, type Fps, type LockField, type LookId, type OrderMode, type OutHeight, type Slide, type TransitionId, type TreatmentId } from "$lib/planner/types";
+  import { ASPECTS, DEPTH_TREATMENTS, TRANSITION_NAMES, TREATMENTS, TREATMENT_NAMES, type Aspect, type FillId, type Fps, type LockField, type OrderMode, type OutHeight, type Slide, type TransitionId, type TreatmentId } from "$lib/planner/types";
   import { fmtClock } from "$lib/util/math";
   let tab = $state<"slide" | "show" | "music">("slide");
   const slide = $derived(app.project?.slides.find((s) => s.id === app.selected[0]) ?? null);
@@ -24,7 +24,6 @@
   const treatments = $derived(TREATMENTS.filter((t) => !DEPTH_TREATMENTS.has(t) || media?.depth).map((t) => ({ v: t, label: TREATMENT_NAMES[t] })));
   const transitions: TransitionId[] = ["cut", "crossfade", "dipBlack", "dipWhite", "push", "whip"];
   const fills: { v: FillId; label: string }[] = [{ v: "cover", label: "Cover" }, { v: "blur", label: "Blur" }, { v: "tilt", label: "Tilt" }];
-  const looks: { v: LookId; label: string }[] = [{ v: "photo", label: "Photo" }, { v: "topo", label: "Topo" }, { v: "engraving", label: "Engraving" }, { v: "thermal", label: "Thermal" }, { v: "hologram", label: "Hologram" }];
   const beatLen = $derived(app.timeline?.beats.length ? (app.timeline.beats[app.timeline.beats.length - 1] - app.timeline.beats[0]) / Math.max(1, app.timeline.beats.length - 1) : 0);
 </script>
 
@@ -64,7 +63,6 @@
         </div>
         {#if framing && media}<Framing {slide} {media} />{/if}
         <Seg label="Fill" options={fills} value={slide.fill} onchange={(v) => set((s) => (s.fill = v), ["fill"])} />
-        <Seg label="Look" options={looks} value={slide.look} onchange={(v) => set((s) => (s.look = v), ["look"])} wrap />
       {/if}
       <div class="field">
         <span class="lbl">Transition in <button class="lock {lock('transition')}" onclick={() => app.unlock(slide.id, "transition")} title="Unlock">🔒</button></span>
@@ -126,7 +124,7 @@
     </div>
     <div class="field"><span class="lbl">Depth</span>
       <div class="row"><span class="dim small">3D strength</span><input type="range" min="0" max="1.5" step="0.05" value={app.project.depthStrength} onchange={(e) => app.edit((p) => { p.depthStrength = Number((e.currentTarget as HTMLInputElement).value); }, undefined, { replan: true })} /></div>
-      <span class="dim small">Depth analysis arrives in a later version; moves are 2D for now.</span>
+      <span class="dim small">3D moves use each photo's depth map once its analysis has arrived; photos without relief stay 2D.</span>
     </div>
     <button onclick={() => app.replan({ newSeed: true })}>Re-roll (new seed, locks kept)</button>
     {#if app.planResult?.warnings.length}<div class="warn">{#each app.planResult.warnings as w}<div>{w}</div>{/each}</div>{/if}

@@ -42,6 +42,8 @@ test("import, make, preview and export", async ({ page }) => {
   await expect(page.getByText("Make my show")).toBeVisible();
   // Wait for the song analysis to show a tempo.
   await expect(page.getByText(/BPM/)).toBeVisible({ timeout: 60_000 });
+  // Cinematic allows 3D treatments (Classic, the default, is 2D only).
+  await page.locator("button.style", { hasText: "Cinematic" }).click();
   await page.getByText("Make my show").click();
   await page.waitForURL(/#\/edit\//);
   const cards = page.locator(".board .card");
@@ -50,6 +52,8 @@ test("import, make, preview and export", async ({ page }) => {
   expect(n).toBeGreaterThan(0);
   // Wait for faces (model download in the worker) or time out gracefully.
   await page.waitForFunction(() => /items analysed/.test(document.body.innerText), null, { timeout: 90_000 }).catch(() => logs.push("faces did not finish in time"));
+  // Depth (model download + one inference per photo in the worker).
+  await page.waitForFunction(() => /depth done/.test(document.body.innerText), null, { timeout: 300_000 }).catch(() => logs.push("depth did not finish in time"));
   const diag = await page.evaluate(async () => {
     const req = indexedDB.open("lantern");
     const db = await new Promise<IDBDatabase>((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
@@ -57,9 +61,22 @@ test("import, make, preview and export", async ({ page }) => {
     const media = await all<{ info: { name: string } }>("media");
     const analysis = await all<{ stage: string; status: string; error?: string; result: unknown }>("analysis");
     const faces = analysis.filter((a) => a.stage === "faces");
-    return { media: media.length, names: media.map((m) => m.info.name).slice(0, 30), facesOk: faces.filter((f) => f.status === "ok").length, facesErr: faces.filter((f) => f.status === "error").map((f) => f.error).slice(0, 3), faceCounts: faces.filter((f) => f.status === "ok").map((f) => (f.result as { faces: unknown[] }).faces.length) };
+    const depth = analysis.filter((a) => a.stage === "depth");
+    const depthOk = depth.filter((d) => d.status === "ok").map((d) => d.result as { depth: { sep: number; quality: number; w: number; h: number }; ms: number });
+    return { depthOk: depthOk.length, depthErr: depth.filter((d) => d.status === "error").map((d) => d.error).slice(0, 3), depthMs: depthOk.map((d) => Math.round(d.ms)), depthStats: depthOk.slice(0, 8).map((d) => `${d.depth.w}x${d.depth.h} sep ${d.depth.sep.toFixed(2)} q ${d.depth.quality.toFixed(2)}`),
+      media: media.length, names: media.map((m) => m.info.name).slice(0, 30), facesOk: faces.filter((f) => f.status === "ok").length, facesErr: faces.filter((f) => f.status === "error").map((f) => f.error).slice(0, 3), faceCounts: faces.filter((f) => f.status === "ok").map((f) => (f.result as { faces: unknown[] }).faces.length) };
   });
   logs.push("DIAG " + JSON.stringify(diag));
+  expect(diag.depthErr).toEqual([]);
+  // The planner should have upgraded photos with depth to 3D treatments.
+  const treatments = await page.evaluate(async () => {
+    const req = indexedDB.open("lantern");
+    const db = await new Promise<IDBDatabase>((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });
+    const projects = await new Promise<{ slides: { treatment: { id: string }; auto: { quality: string } }[] }[]>((res) => { const r = db.transaction("projects").objectStore("projects").getAll(); r.onsuccess = () => res(r.result); });
+    const slides = projects[0]?.slides ?? [];
+    return { ids: slides.map((s) => s.treatment.id), full: slides.filter((s) => s.auto.quality === "full").length, n: slides.length };
+  });
+  logs.push("TREATMENTS " + JSON.stringify(treatments));
   // Scrub into the show and check the canvas has drawn something.
   await page.locator(".scrub").click({ position: { x: 60, y: 9 } });
   await page.waitForTimeout(1500);

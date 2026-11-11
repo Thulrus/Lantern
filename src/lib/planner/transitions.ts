@@ -4,7 +4,7 @@ import type { Prng } from "$lib/util/prng";
 import type { Style, TransitionId } from "./types";
 
 const AVAILABLE_2D = new Set<TransitionId>(["cut", "crossfade", "dipBlack", "dipWhite", "push", "whip"]);
-const NEEDS_DEPTH = new Set<TransitionId>(["depthWipe", "flyThrough", "scan"]);
+const NEEDS_DEPTH = new Set<TransitionId>(["depthWipe", "flyThrough"]);
 
 export interface TransitionContext {
   major: boolean; first: boolean; flipbook: boolean; beat: number; tempoFast: boolean; hasDepth: boolean; hasMusic: boolean; prevType?: TransitionId;

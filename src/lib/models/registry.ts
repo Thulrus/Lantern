@@ -31,11 +31,11 @@ export const MODELS: ModelSpec[] = [
     note: "Eyes-open and smile scores for best-of-burst.",
   },
   {
-    id: "depth-anything-v2-small", task: "depth", name: "Depth Anything V2 Small (ONNX)",
-    url: "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_q4f16.onnx",
-    bytes: 0, sha256: null,
+    id: "depth-anything-v2-small", task: "depth", name: "Depth Anything V2 Small (ONNX, 8-bit)",
+    url: "https://huggingface.co/onnx-community/depth-anything-v2-small/resolve/main/onnx/model_quantized.onnx",
+    bytes: 27258801, sha256: "fcf51f1b230362b28690bb9d1809bf0431f29cad20534e3f589bd7285547f20d",
     license: "Apache-2.0", source: "https://huggingface.co/onnx-community/depth-anything-v2-small", tier: "all",
-    note: "[verify] size and export; Base and Large are CC-BY-NC and must not be used.",
+    note: "Relative depth for 3D moves. Base and Large are CC-BY-NC and must not be used.",
   },
   {
     id: "clip-vit-b32-vision", task: "embedding", name: "CLIP ViT-B/32 image tower (ONNX, quantized)",

@@ -55,7 +55,7 @@
     <header class="row">
       <a href="#/" class="brand">◐</a>
       <input class="title" bind:value={app.project.title} onchange={() => app.save()} />
-      <span class="dim small status">{prog.faces < prog.total ? `faces found for ${prog.faces} of ${prog.total}` : `${prog.total} items analysed`}{app.dirty ? " · saving…" : ""}</span>
+      <span class="dim small status">{prog.faces < prog.total ? `faces found for ${prog.faces} of ${prog.total}` : prog.depth < prog.total ? `${prog.total} items analysed · depth for ${prog.depth}` : `${prog.total} items analysed, depth done`}{app.dirty ? " · saving…" : ""}</span>
       {#if app.pendingUpgrade}<button class="small" onclick={applyUpgrade}>New analysis for {app.pendingUpgrade} items: apply</button>{/if}
       <div class="row">
         <button class="ghost" onclick={() => app.undoEdit()} disabled={!app.canUndo} title="Undo (Ctrl+Z)">↶</button>

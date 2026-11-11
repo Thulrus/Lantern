@@ -48,7 +48,7 @@
       </div>
       <div class="meta">
         <span>{s.dur.toFixed(1)} s</span>
-        {#if s.kind !== "title"}<span class="dots"><i class={dot(s.items[0], "basics")} title="basics"></i><i class={dot(s.items[0], "faces")} title="faces"></i></span>{/if}
+        {#if s.kind !== "title"}<span class="dots"><i class={dot(s.items[0], "basics")} title="basics"></i><i class={dot(s.items[0], "faces")} title="faces"></i><i class={dot(s.items[0], "depth")} title="depth"></i></span>{/if}
       </div>
     </div>
   {/each}

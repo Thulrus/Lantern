@@ -1,8 +1,8 @@
 // The renderer (spec §9): drawFrame(timeline, t) as a pure function of show time. Each slide is
 // a depth-displaced grid mesh (flat until depth maps arrive) seen through the shared camera
 // model, over a blurred letterbox fill. Transitions render both slides offscreen and combine
-// them in a composite shader, which also applies the film grade and captions. No wall clock,
-// no Math.random: grain and flicker are functions of show time and the slide id.
+// them in a composite shader, which also applies the captions. No wall clock, no Math.random
+// in drawing: every frame is a pure function of show time.
 import { type Border, type V3, border, cameraFor, clampView, fitView, focusAt, liveBounds } from "$lib/planner/camera";
 import type { RenderSlide, Timeline, TransitionId } from "$lib/planner/types";
 import { smooth } from "$lib/util/math";
@@ -51,68 +51,15 @@ uniform sampler2D u_tex, u_maps;
 uniform float u_layer, u_flat, u_tight;
 uniform vec2 u_focus;       // inverse depth in focus, blur per unit of depth difference
 uniform vec2 u_drange;
-uniform vec4 u_look;        // look, show time, slide seed, unused
 uniform float u_alpha;
 out vec4 o;
-vec3 inferno(float t) {
-  t = clamp(t, 0.0, 1.0);
-  const vec3 c0 = vec3(0.00021894, 0.00165100, -0.01948090);
-  const vec3 c1 = vec3(0.10651342, 0.56395644, 3.93271239);
-  const vec3 c2 = vec3(11.60249308, -3.97285397, -15.94239411);
-  const vec3 c3 = vec3(-41.70399613, 17.43639888, 44.35414520);
-  const vec3 c4 = vec3(77.16293570, -33.40235894, -81.80730926);
-  const vec3 c5 = vec3(-71.31942824, 32.62606426, 73.20951986);
-  const vec3 c6 = vec3(25.13112622, -12.24266895, -23.07032500);
-  return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
-}
-float hatch(float F, float hw) {
-  float w = max(fwidth(F), 1e-4), f = fract(F);
-  float cov = 1.0 - smoothstep(hw - w, hw + w, min(f, 1.0 - f));
-  return mix(cov * step(0.01, hw), 2.0 * hw, smoothstep(0.3, 0.6, w));
-}
 void main() {
   vec4 m = texture(u_maps, v_uv);
   float d = mix(mix(m.g, m.r, u_layer), 0.5, u_flat);
   float dn = clamp((d - u_drange.x) / max(u_drange.y - u_drange.x, 1e-3), 0.0, 1.0);
   float bias = min(abs(d - u_focus.x) * u_focus.y, ${MAX_BLUR.toFixed(1)}) * (1.0 - u_flat * 0.0);
-  vec3 photo = texture(u_tex, v_uv, bias).rgb;
-  float lum = dot(photo, vec3(0.299, 0.587, 0.114));
-  int look = int(u_look.x + 0.5);
-  vec3 c = photo;
+  vec3 c = texture(u_tex, v_uv, bias).rgb;
   float a = mix(1.0, mix(m.b, m.a, u_tight), u_layer * (1.0 - u_flat));
-  float t = u_look.y;
-  if (look == 4) {
-    // Thermal: colour by depth (a warm wash when there is no depth yet), shaded by the photo.
-    c = inferno(0.1 + 0.85 * mix(dn, 0.35 + 0.4 * lum, u_flat)) * (0.45 + 0.85 * lum);
-  } else if (look == 7) {
-    // Engraving: the photo redrawn as ink lines on paper, swelling where the picture is dark.
-    float tone = smoothstep(0.04, 0.92, dot(textureLod(u_tex, v_uv, 1.0).rgb, vec3(0.299, 0.587, 0.114)));
-    vec2 p = vec2((v_uv.x - 0.5), v_uv.y - 0.5);
-    float bend = (1.0 - u_flat) * dn * 0.25, flow = t * 0.3;
-    float F1 = (dot(p, vec2(-sin(0.5), cos(0.5))) + bend) * 150.0 + flow;
-    float F2 = (dot(p, vec2(-sin(1.6), cos(1.6))) + bend) * 150.0 - flow;
-    float ink = max(hatch(F1, 0.5 * (1.0 - tone)), hatch(F2, 0.5 * clamp(1.0 - tone / 0.42, 0.0, 1.0)));
-    c = mix(vec3(0.95, 0.91, 0.83), vec3(0.15, 0.1, 0.09), ink);
-  } else if (look == 3) {
-    // Topo: contour lines of equal depth drifting toward the viewer, as light laid on the photo.
-    float k = mix(dn, lum, u_flat) * 24.0 - t * 0.5;
-    float w = max(fwidth(k), 1e-4), f = fract(k);
-    float px = min(f, 1.0 - f) / w;
-    float line = 1.0 - smoothstep(0.4, 1.6, px);
-    float crowd = 1.0 - smoothstep(0.12, 0.35, w);
-    vec3 tint = mix(vec3(0.25, 0.55, 1.0), vec3(0.45, 1.0, 0.85), dn);
-    c = photo * 0.78;
-    c = 1.0 - (1.0 - c) * (1.0 - clamp(tint * line * crowd * 0.9, 0.0, 1.0));
-  } else if (look == 1) {
-    // Hologram: cyan light that keeps the picture readable, scan lines and a rolling band.
-    vec3 tint = vec3(0.3, 0.85, 1.0);
-    float l = pow(lum, 0.7);
-    vec3 base = mix(tint * (0.12 + 1.05 * l), photo * vec3(0.85, 1.0, 1.2) * 1.15, 0.4);
-    float lines = 0.8 + 0.2 * sin(gl_FragCoord.y * 1.7 - t * 8.0);
-    float roll = 1.0 + 0.35 * exp(-pow(fract(v_uv.y + t * 0.09) - 0.5, 2.0) * 60.0);
-    float sweep = exp(-pow((dn - fract(t * 0.13) * 1.3 + 0.15) / 0.035, 2.0)) * (1.0 - u_flat);
-    c = base * lines * roll + tint * 0.7 * sweep;
-  }
   o = vec4(c, a * u_alpha);
 }`;
 
@@ -130,17 +77,14 @@ uniform vec3 u_p;           // mip level, dim, alpha
 out vec4 o;
 void main() { o = vec4(textureLod(u_tex, v_uv, u_p.x).rgb * u_p.y, u_p.z); }`;
 
-// Composite: A (outgoing) and B (incoming) framebuffers, the transition, the grade and captions.
+// Composite: A (outgoing) and B (incoming) framebuffers, the transition and captions.
 const COMP_FS = `#version 300 es
 precision highp float;
 in vec2 v_uv;
 uniform sampler2D u_a, u_b, u_cap;
 uniform vec4 u_tr;          // mode, progress, direction, extra
-uniform vec4 u_grade;       // film amount, show time, slide seed, vignette
 uniform vec4 u_capp;        // caption alpha, dy, has caption, unused
-uniform vec2 u_res;
 out vec4 o;
-float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
 vec3 blurTap(sampler2D s, vec2 uv, vec2 dir, float amt) {
   vec3 c = vec3(0.0);
   for (int i = -4; i <= 4; i++) c += texture(s, uv + dir * float(i) * amt / 4.0).rgb;
@@ -169,16 +113,6 @@ void main() {
     vec3 b = blurTap(u_b, clamp(uv + vec2(dir * 0.5, 0.0) - off, 0.0, 1.0), vec2(1.0, 0.0), amt);
     c = mix(a, b, smoothstep(0.35, 0.65, e));
   } else c = texture(u_b, uv).rgb;
-  float film = u_grade.x;
-  if (film > 0.0) {
-    // Film grade: grain (a function of show time and the slide), vignette, gentle tone curve, warmth.
-    float g = hash(floor(uv * u_res / 2.0) + fract(u_grade.y * 7.31) * 100.0 + u_grade.z) - 0.5;
-    c += g * 0.07 * film;
-    vec2 q = uv - 0.5;
-    c *= 1.0 - film * 0.35 * dot(q, q) * 2.2;
-    c = mix(c, c * c * (3.0 - 2.0 * c), 0.25 * film);
-    c *= mix(vec3(1.0), vec3(1.03, 1.0, 0.95), film);
-  }
   if (u_capp.z > 0.5) {
     vec4 cap = texture(u_cap, vec2(uv.x, 1.0 - uv.y + u_capp.y));
     c = mix(c, cap.rgb, cap.a * u_capp.x);
@@ -186,7 +120,7 @@ void main() {
   o = vec4(c, 1.0);
 }`;
 
-const TR_MODE: Partial<Record<TransitionId, number>> = { crossfade: 1, dipBlack: 2, dipWhite: 3, push: 4, whip: 5, depthWipe: 1, flyThrough: 1, scan: 1, matchCut: 1, morph: 1 };
+const TR_MODE: Partial<Record<TransitionId, number>> = { crossfade: 1, dipBlack: 2, dipWhite: 3, push: 4, whip: 5, depthWipe: 1, flyThrough: 1, matchCut: 1, morph: 1 };
 
 type Canvas = HTMLCanvasElement | OffscreenCanvas;
 
@@ -211,11 +145,11 @@ export class Renderer {
     this.gl = gl;
     this.lite = !!opts.lite;
     this.mesh = link(gl, MESH_VS, MESH_FS);
-    this.mloc = uniforms(gl, this.mesh, ["u_maps", "u_tex", "u_layer", "u_ia", "u_cam", "u_rot", "u_proj", "u_view", "u_canvas", "u_flat", "u_tight", "u_focus", "u_drange", "u_look", "u_alpha"]);
+    this.mloc = uniforms(gl, this.mesh, ["u_maps", "u_tex", "u_layer", "u_ia", "u_cam", "u_rot", "u_proj", "u_view", "u_canvas", "u_flat", "u_tight", "u_focus", "u_drange", "u_alpha"]);
     this.screen = link(gl, SCREEN_VS, SCREEN_FS);
     this.sloc = uniforms(gl, this.screen, ["u_map", "u_tex", "u_p"]);
     this.comp = link(gl, SCREEN_VS, COMP_FS);
-    this.cloc = uniforms(gl, this.comp, ["u_map", "u_a", "u_b", "u_cap", "u_tr", "u_grade", "u_capp", "u_res"]);
+    this.cloc = uniforms(gl, this.comp, ["u_map", "u_a", "u_b", "u_cap", "u_tr", "u_capp"]);
 
     const G = this.lite ? GRID_LITE : GRID_FULL;
     const uv: number[] = [], idx: number[] = [];
@@ -333,9 +267,6 @@ export class Renderer {
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, this.fbos[1].tex); gl.uniform1i(this.cloc.u_b, 1);
     gl.uniform4f(this.cloc.u_map, 1, 1, 0, 0);
     gl.uniform4f(this.cloc.u_tr, soloB ? 6 : mode, p, dir, 0);
-    const lead = b ?? a;
-    gl.uniform4f(this.cloc.u_grade, lead?.grade ?? 0, t, lead ? (hash32(lead.id) % 1000) / 1000 : 0, 0);
-    gl.uniform2f(this.cloc.u_res, W, H);
     // Captions and titles.
     const cap = this.captionAt(tl, t, W, H);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, this.capTex); gl.uniform1i(this.cloc.u_cap, 2);
@@ -433,7 +364,6 @@ export class Renderer {
     gl.uniform1f(this.mloc.u_tight, smooth((off - TIGHT_FROM) / TIGHT_SPAN));
     gl.uniform2f(this.mloc.u_focus, focus[0], maps ? focus[1] : 0);
     gl.uniform2f(this.mloc.u_drange, 0, 1);
-    gl.uniform4f(this.mloc.u_look, s.look, t, (hash32(s.id) % 1000) / 1000, 0);
     gl.uniform1f(this.mloc.u_alpha, 1);
     gl.uniform1f(this.mloc.u_layer, 0);
     gl.drawElements(gl.TRIANGLES, this.count, gl.UNSIGNED_SHORT, 0);

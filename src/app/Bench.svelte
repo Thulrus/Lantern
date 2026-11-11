@@ -7,6 +7,8 @@
   import { MODELS } from "$lib/models/registry";
   import { fetchModel } from "$lib/models/fetch";
   import { loadFaceDetector, detectFaces } from "$lib/analysis/faces";
+  import { DEPTH_EDGE_FULL, DEPTH_MODEL, estimateDepth, loadDepth } from "$lib/analysis/depth";
+  import { depthStats, normalizeDepth, reliefOf } from "$lib/analysis/depthmath";
   import { analyzeMusic, SR } from "$lib/audio/analyze";
   import { Renderer } from "$lib/render/renderer";
   import { exportCapabilities, exportVideo } from "$lib/export/export";
@@ -37,6 +39,35 @@
     } catch (e) { add("faces", "error: " + (e instanceof Error ? e.message : String(e))); }
     busy = null;
   }
+  async function benchDepth() {
+    busy = "depth";
+    try {
+      const t0 = performance.now();
+      await fetchModel(DEPTH_MODEL);
+      add("depth model download + verify", "ok", performance.now() - t0);
+      const t1 = performance.now();
+      const s = await loadDepth(BASE);
+      add("depth session init (wasm)", `ok, threads ${crossOriginIsolated ? "on" : "off (not isolated)"}`, performance.now() - t1);
+      // A synthetic scene: a bright disc "subject" on a darker gradient "room" with a floor line.
+      const img = benchImage(1);
+      const ctx = img.getContext("2d")!;
+      ctx.fillStyle = "#eee"; ctx.beginPath(); ctx.ellipse(960, 640, 220, 380, 0, 0, 7); ctx.fill();
+      let r = await estimateDepth(s, img, DEPTH_EDGE_FULL);
+      add("depth warm-up (1920×1080 → short edge 518)", `${r.w}×${r.h}`, performance.now() - t1);
+      const t2 = performance.now();
+      r = await estimateDepth(s, img, DEPTH_EDGE_FULL);
+      const ms = performance.now() - t2;
+      const norm = normalizeDepth(r.raw);
+      const st = depthStats(norm.u16, r.w, r.h, { lo: norm.lo, hi: norm.hi, cv: reliefOf(r.raw) }, [740, 260, 1180, 1020], 1920, 1080);
+      add("depth inference, second run", `sep ${st.sep.toFixed(3)}, pivot ${st.pivot.toFixed(2)}, quality ${st.quality.toFixed(2)}, raw ${st.range[0].toFixed(2)}..${st.range[1].toFixed(2)}`, ms);
+      // Show the map.
+      const c = canvas.getContext("2d")!, im = c.createImageData(r.w, r.h);
+      for (let i = 0; i < norm.u16.length; i++) { const v = norm.u16[i] >> 8; im.data[i * 4] = v; im.data[i * 4 + 1] = v; im.data[i * 4 + 2] = v; im.data[i * 4 + 3] = 255; }
+      const o = new OffscreenCanvas(r.w, r.h); o.getContext("2d")!.putImageData(im, 0, 0);
+      c.clearRect(0, 0, canvas.width, canvas.height); c.drawImage(o, 0, 0, canvas.width, canvas.height);
+    } catch (e) { add("depth", "error: " + (e instanceof Error ? e.message : String(e))); }
+    busy = null;
+  }
   async function benchBeats() {
     busy = "beats";
     const bpm = 128, n = 60 * SR, x = new Float32Array(n), period = (60 / bpm) * SR;
@@ -53,7 +84,7 @@
   function syntheticTimeline(dur: number): Timeline {
     const layers: Timeline["layers"] = [];
     const n = 6, each = dur / n;
-    for (let i = 0; i < n; i++) layers.push({ id: "b" + i, t0: i * each, t1: (i + 1) * each + (i < n - 1 ? 0.5 : 0), w: 1920, h: 1080, assets: { image: { hash: "bench" + (i % 2), kind: "image" } }, keys: [{ t: 0, view: [0, 0, 1], cam: [0, 0, 0], f: 1, ds: 0 }, { t: 1, view: [0.1 * (i % 2 ? 1 : -1), 0, 0.8], cam: [0, 0, 0], f: 1, ds: 0 }], look: 0, fill: 0, grade: 0.3, enter: i ? { type: "crossfade", t0: i * each, t1: i * each + 0.5 } : undefined, cover: [true, true], bounds: [-8 / 9, 8 / 9, -0.5, 0.5] });
+    for (let i = 0; i < n; i++) layers.push({ id: "b" + i, t0: i * each, t1: (i + 1) * each + (i < n - 1 ? 0.5 : 0), w: 1920, h: 1080, assets: { image: { hash: "bench" + (i % 2), kind: "image" } }, keys: [{ t: 0, view: [0, 0, 1], cam: [0, 0, 0], f: 1, ds: 0 }, { t: 1, view: [0.1 * (i % 2 ? 1 : -1), 0, 0.8], cam: [0, 0, 0], f: 1, ds: 0 }], fill: 0, enter: i ? { type: "crossfade", t0: i * each, t1: i * each + 0.5 } : undefined, cover: [true, true], bounds: [-8 / 9, 8 / 9, -0.5, 0.5] });
     return { v: 1, dur, fps: 30, size: [1280, 720], aspect: 16 / 9, layers, audio: [], captions: [{ t0: 0, t1: 3, text: "Lantern export spike", position: "bottom", style: "plain", slideId: "b0" }], beats: [] };
   }
   function benchImage(seed: number): OffscreenCanvas {
@@ -98,7 +129,7 @@
 </script>
 
 <div class="page">
-  <header class="row"><a href="#/">◐ Lantern</a><span class="dim">›</span><h2>Bench (M0 spikes)</h2></header>
+  <header class="row"><a href="#/">◐ Lantern</a><span class="dim">›</span><h2>Bench</h2></header>
   {#if caps}
     <div class="card">
       <h3>Capabilities</h3>
@@ -108,6 +139,7 @@
   {/if}
   <div class="row">
     <button onclick={benchFaces} disabled={!!busy}>Faces (download + time)</button>
+    <button onclick={benchDepth} disabled={!!busy}>Depth (download + time)</button>
     <button onclick={benchBeats} disabled={!!busy}>Beat tracking</button>
     <button onclick={benchRender} disabled={!!busy}>Renderer</button>
     <button onclick={benchExport} disabled={!!busy}>Export spike (10 s)</button>

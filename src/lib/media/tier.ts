@@ -21,3 +21,11 @@ export async function detect(): Promise<Capabilities> {
   const tier: Tier = mobile || memory < 4 ? "lite" : webgpu && webcodecs ? "full" : "standard";
   return { tier, webgpu, webgl2, webcodecs, opfs, isolated: typeof crossOriginIsolated !== "undefined" && crossOriginIsolated, fsAccess: "showDirectoryPicker" in window, mobile, threads, memory, wakeLock: "wakeLock" in navigator };
 }
+
+/** A synchronous estimate of the tier (no WebGPU probe) for code that cannot await: lite on
+ *  phones and small-memory devices, else standard. */
+export function quickTier(): Tier {
+  const nav = navigator as Navigator & { deviceMemory?: number; userAgentData?: { mobile?: boolean } };
+  const mobile = nav.userAgentData?.mobile ?? (/Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && Math.min(screen.width, screen.height) < 900));
+  return mobile || (nav.deviceMemory ?? 4) < 4 ? "lite" : "standard";
+}

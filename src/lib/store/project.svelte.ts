@@ -244,16 +244,18 @@ class AppState {
   }
 
   /** Analysis progress for the UI ("faces found for 84 of 120"). */
-  progress(): { basics: number; faces: number; total: number } {
+  progress(): { basics: number; faces: number; depth: number; total: number } {
     const p = this.project;
-    if (!p) return { basics: 0, faces: 0, total: 0 };
-    let b = 0, f = 0;
+    if (!p) return { basics: 0, faces: 0, depth: 0, total: 0 };
+    let b = 0, f = 0, d = 0;
     for (const h of p.media) {
       if (this.stageStatus.get(`${h}|basics`) === "ok" || this.analysis.get(h)?.basics) b++;
       const fs = this.stageStatus.get(`${h}|faces`);
       if (fs === "ok" || fs === "skipped" || this.analysis.get(h)?.faces) f++;
+      const ds = this.stageStatus.get(`${h}|depth`);
+      if (ds === "ok" || ds === "skipped" || ds === "error" || this.analysis.get(h)?.depth) d++;
     }
-    return { basics: b, faces: f, total: p.media.length };
+    return { basics: b, faces: f, depth: d, total: p.media.length };
   }
 
   close(): void {
