@@ -1,18 +1,32 @@
 // Music analysis (spec §6.2), all classical DSP so it runs anywhere: onset strength from log-mel
 // spectral flux, a tempogram with a 120 BPM prior, Ellis's dynamic-programming beat tracker,
 // downbeats by low-frequency onset energy and harmonic change, sections by Foote novelty on
-// beat-synchronous chroma + MFCC, an energy curve, and the song's edges.
+// beat-synchronous chroma + mel features, an energy curve, and the song's edges.
+//
+// Memory stays linear in the song's length: features live in flat typed arrays, the
+// self-similarity matrix is only ever computed in a band around the diagonal, and nothing is
+// spread into a call (`Math.max(...xs)` fails past ~100k elements).
 import { clamp, mean, median } from "$lib/util/math";
 import type { MusicAnalysis } from "$lib/planner/types";
 import { FFT } from "./fft";
 
 export const SR = 22050;
-const N_FFT = 2048, HOP = 512, N_MELS = 64;
+const N_FFT = 2048, HOP = 512, N_MELS = 64, N_CHROMA = 12;
+
+/** Longest song Lantern analyses and plays (spec §6.1 has no limit; this keeps the decoded PCM,
+ *  the worker's copy and the export mix inside a few hundred MB). */
+export const MAX_SONG_SECONDS = 30 * 60;
+
+function maxOf(xs: ArrayLike<number>, floor = -Infinity): number {
+  let m = floor;
+  for (let i = 0; i < xs.length; i++) if (xs[i] > m) m = xs[i];
+  return m;
+}
 
 export function resampleMono(channels: Float32Array[], srIn: number, srOut = SR): Float32Array {
   const n = channels[0].length;
-  const mono = new Float32Array(n);
-  for (const c of channels) for (let i = 0; i < n; i++) mono[i] += c[i] / channels.length;
+  const mono = channels.length === 1 && srIn === srOut ? channels[0] : new Float32Array(n);
+  if (mono !== channels[0]) for (const c of channels) for (let i = 0; i < n; i++) mono[i] += c[i] / channels.length;
   if (srIn === srOut) return mono;
   const ratio = srIn / srOut, m = Math.floor(n / ratio);
   const out = new Float32Array(m);
@@ -42,64 +56,68 @@ function melFilters(sr: number, nfft: number, nMels: number): { starts: Int32Arr
   return { starts, weights };
 }
 
-export interface Features { onset: Float32Array; frameRate: number; mel: Float32Array[]; chroma: Float32Array[]; lowOnset: Float32Array; rms: Float32Array; brightness: Float32Array }
+/** Frame features. `mel` is frames × N_MELS and `chroma` frames × 12, both row-major and flat. */
+export interface Features { frames: number; onset: Float32Array; frameRate: number; mel: Float32Array; chroma: Float32Array; lowOnset: Float32Array; rms: Float32Array; brightness: Float32Array }
 
-export function features(x: Float32Array, sr = SR): Features {
+export function features(x: Float32Array, sr = SR, onProgress?: (p: number) => void): Features {
   const fft = new FFT(N_FFT);
   const win = new Float32Array(N_FFT);
   for (let i = 0; i < N_FFT; i++) win[i] = 0.5 - 0.5 * Math.cos((2 * Math.PI * i) / N_FFT);
   const frames = Math.max(1, Math.floor((x.length - N_FFT) / HOP) + 1);
   const re = new Float32Array(N_FFT), im = new Float32Array(N_FFT), mag = new Float32Array(N_FFT / 2 + 1), buf = new Float32Array(N_FFT);
   const mf = melFilters(sr, N_FFT, N_MELS);
-  const mel: Float32Array[] = [], chroma: Float32Array[] = [];
+  const mel = new Float32Array(frames * N_MELS), chroma = new Float32Array(frames * N_CHROMA);
   const onset = new Float32Array(frames), lowOnset = new Float32Array(frames), rms = new Float32Array(frames), brightness = new Float32Array(frames);
-  let prev = new Float32Array(N_MELS);
   const binHz = sr / N_FFT;
+  // Pitch class per bin, precomputed (-1 outside the chroma range).
+  const pcOf = new Int8Array(mag.length).fill(-1);
+  for (let k = 1; k < mag.length; k++) { const hz = k * binHz; if (hz >= 60 && hz <= 5000) pcOf[k] = (((Math.round(12 * Math.log2(hz / 440)) % 12) + 12 + 9) % 12); }
   for (let f = 0; f < frames; f++) {
     const off = f * HOP;
     let e = 0;
     for (let i = 0; i < N_FFT; i++) { const v = x[off + i] ?? 0; buf[i] = v * win[i]; e += v * v; }
     rms[f] = Math.sqrt(e / N_FFT);
     fft.magnitude(buf, re, im, mag);
-    const m = new Float32Array(N_MELS);
+    const mo = f * N_MELS, po = mo - N_MELS;
+    let flux = 0, low = 0;
     for (let b = 0; b < N_MELS; b++) {
       let s = 0;
       const w = mf.weights[b], st = mf.starts[b];
       for (let k = 0; k < w.length; k++) s += w[k] * (mag[st + k] ?? 0);
-      m[b] = Math.log1p(s * 10);
+      const m = Math.log1p(s * 10);
+      mel[mo + b] = m;
+      const d = m - (f ? mel[po + b] : 0);
+      if (d > 0) { flux += d; if (b < 10) low += d; }
     }
-    let flux = 0, low = 0;
-    for (let b = 0; b < N_MELS; b++) { const d = m[b] - prev[b]; if (d > 0) { flux += d; if (b < 10) low += d; } }
     onset[f] = flux; lowOnset[f] = low;
-    prev = m; mel.push(m);
     // Chroma from the magnitude spectrum, and spectral centroid for brightness.
-    const c = new Float32Array(12);
-    let num = 0, den = 0;
+    const co = f * N_CHROMA;
+    let num = 0, den = 0, cs = 0;
     for (let k = 1; k < mag.length; k++) {
-      const hz = k * binHz, v = mag[k] * mag[k];
-      num += hz * v; den += v;
-      if (hz < 60 || hz > 5000) continue;
-      const pc = Math.round(12 * Math.log2(hz / 440)) % 12;
-      c[(pc + 12 + 9) % 12] += mag[k];
+      const v = mag[k] * mag[k];
+      num += k * binHz * v; den += v;
+      const pc = pcOf[k];
+      if (pc >= 0) { chroma[co + pc] += mag[k]; cs += mag[k]; }
     }
-    const cs = c.reduce((a, b) => a + b, 0) || 1;
-    for (let i = 0; i < 12; i++) c[i] /= cs;
-    chroma.push(c);
+    if (cs > 0) for (let i = 0; i < N_CHROMA; i++) chroma[co + i] /= cs;
     brightness[f] = den ? num / den : 0;
+    if (onProgress && (f & 2047) === 0) onProgress(f / frames);
   }
   // Onset strength: subtract a local median, keep the positive part, normalize.
   const o = localMedianSub(onset, 16);
-  return { onset: o, frameRate: sr / HOP, mel, chroma, lowOnset, rms, brightness };
+  return { frames, onset: o, frameRate: sr / HOP, mel, chroma, lowOnset, rms, brightness };
 }
 
 function localMedianSub(x: Float32Array, half: number): Float32Array {
   const out = new Float32Array(x.length);
+  const win: number[] = new Array(2 * half + 1);
   for (let i = 0; i < x.length; i++) {
     const a = Math.max(0, i - half), b = Math.min(x.length, i + half + 1);
-    const m = median(Array.from(x.slice(a, b)));
-    out[i] = Math.max(0, x[i] - m);
+    win.length = b - a;
+    for (let k = a; k < b; k++) win[k - a] = x[k];
+    out[i] = Math.max(0, x[i] - median(win));
   }
-  const mx = Math.max(1e-6, ...out);
+  const mx = maxOf(out, 1e-6);
   for (let i = 0; i < out.length; i++) out[i] /= mx;
   return out;
 }
@@ -144,7 +162,7 @@ export function trackBeats(onset: Float32Array, frameRate: number, bpm: number, 
   const period = (60 / bpm) * frameRate;
   const n = onset.length;
   const score = new Float32Array(n), back = new Int32Array(n).fill(-1);
-  const lo = Math.round(period * 0.5), hi = Math.round(period * 2);
+  const lo = Math.max(1, Math.round(period * 0.5)), hi = Math.round(period * 2);
   for (let i = 0; i < n; i++) {
     let best = 0, bj = -1;
     for (let j = i - hi; j <= i - lo; j++) {
@@ -166,11 +184,11 @@ export function trackBeats(onset: Float32Array, frameRate: number, bpm: number, 
 /** Downbeats: the beat phase (of 4 and of 3) whose candidates carry the most low-frequency
  *  onset energy and the most harmonic change. */
 export function downbeats(beatFrames: number[], f: Features): { phase: number; bar: 3 | 4; downbeatIdx: number[] } {
+  const last = f.frames - 1;
   const chromaChange = (b: number) => {
-    const i = beatFrames[b], j = beatFrames[Math.max(0, b - 1)];
-    const a = f.chroma[Math.min(i, f.chroma.length - 1)], c = f.chroma[Math.min(j, f.chroma.length - 1)];
+    const i = Math.min(beatFrames[b], last) * N_CHROMA, j = Math.min(beatFrames[Math.max(0, b - 1)], last) * N_CHROMA;
     let d = 0;
-    for (let k = 0; k < 12; k++) d += Math.abs(a[k] - c[k]);
+    for (let k = 0; k < N_CHROMA; k++) d += Math.abs(f.chroma[i + k] - f.chroma[j + k]);
     return d;
   };
   const low = (b: number) => { const i = beatFrames[b]; let s = 0; for (let k = -1; k <= 1; k++) s += f.lowOnset[clamp(i + k, 0, f.lowOnset.length - 1)]; return s; };
@@ -190,49 +208,59 @@ export function downbeats(beatFrames: number[], f: Features): { phase: number; b
   return { phase: best.phase, bar: best.bar, downbeatIdx: idx };
 }
 
-/** Sections: beat-synchronous chroma + mel features, a self-similarity matrix, Foote novelty with
- *  a checkerboard kernel, peaks at least `minBars` apart, snapped to downbeats, clustered by similarity. */
-export function sections(beatFrames: number[], dbIdx: number[], bar: number, f: Features, rmsPerBeat: number[]): { boundaries: number[]; labels: string[] } {
+/** Sections: beat-synchronous chroma + mel features, a self-similarity band around the
+ *  diagonal (the checkerboard kernel never looks further than 2K beats), Foote novelty, peaks
+ *  at least 8 bars apart, snapped to downbeats, clustered by similarity. */
+export function sections(beatFrames: number[], dbIdx: number[], bar: number, f: Features): { boundaries: number[]; labels: string[] } {
   const nb = beatFrames.length;
   if (nb < 16) return { boundaries: [0], labels: ["A"] };
-  const feat: Float32Array[] = [];
+  const D = N_CHROMA + N_MELS;
+  const feat = new Float32Array(nb * D);
   for (let b = 0; b < nb; b++) {
-    const i0 = beatFrames[b], i1 = b + 1 < nb ? beatFrames[b + 1] : f.mel.length;
-    const v = new Float32Array(12 + N_MELS);
+    const i0 = beatFrames[b], i1 = Math.min(b + 1 < nb ? beatFrames[b + 1] : f.frames, f.frames);
+    const vo = b * D;
     let n = 0;
-    for (let i = i0; i < Math.min(i1, f.mel.length); i++) {
-      for (let k = 0; k < 12; k++) v[k] += f.chroma[i][k];
-      for (let k = 0; k < N_MELS; k++) v[12 + k] += f.mel[i][k] * 0.1;
+    for (let i = i0; i < i1; i++) {
+      for (let k = 0; k < N_CHROMA; k++) feat[vo + k] += f.chroma[i * N_CHROMA + k];
+      for (let k = 0; k < N_MELS; k++) feat[vo + N_CHROMA + k] += f.mel[i * N_MELS + k] * 0.1;
       n++;
     }
     let norm = 0;
-    for (let k = 0; k < v.length; k++) { v[k] /= Math.max(1, n); norm += v[k] * v[k]; }
+    for (let k = 0; k < D; k++) { feat[vo + k] /= Math.max(1, n); norm += feat[vo + k] ** 2; }
     norm = Math.sqrt(norm) || 1;
-    for (let k = 0; k < v.length; k++) v[k] /= norm;
-    feat.push(v);
+    for (let k = 0; k < D; k++) feat[vo + k] /= norm;
   }
-  const sim = (a: number, b: number) => { let s = 0; const x = feat[a], y = feat[b]; for (let k = 0; k < x.length; k++) s += x[k] * y[k]; return s; };
-  const S: Float32Array[] = feat.map((_, i) => { const r = new Float32Array(nb); for (let j = 0; j < nb; j++) r[j] = sim(i, j); return r; });
+  const sim = (a: number, b: number) => { let s = 0; const ao = a * D, bo = b * D; for (let k = 0; k < D; k++) s += feat[ao + k] * feat[bo + k]; return s; };
   const K = Math.max(4, 4 * bar); // kernel half-size in beats
+  // band[i * W + d] = sim(i, i + d) for d in [0, 2K): the kernel reads S[i+a][i+b] with |a-b| < 2K.
+  const W = 2 * K;
+  const band = new Float32Array(nb * W);
+  for (let i = 0; i < nb; i++) for (let d = 0; d < W && i + d < nb; d++) band[i * W + d] = sim(i, i + d);
+  const S = (p: number, q: number) => (p <= q ? band[p * W + (q - p)] : band[q * W + (p - q)]);
+  const kern = new Float32Array(W * W);
+  for (let a = -K; a < K; a++)
+    for (let b = -K; b < K; b++) kern[(a + K) * W + (b + K)] = ((a < 0) === (b < 0) ? 1 : -1) * Math.exp(-((a * a + b * b) / (2 * (K / 2) ** 2)));
   const nov = new Float32Array(nb);
   for (let i = K; i < nb - K; i++) {
     let s = 0;
-    for (let a = -K; a < K; a++)
-      for (let b = -K; b < K; b++) {
-        const sign = (a < 0) === (b < 0) ? 1 : -1;
-        const g = Math.exp(-((a * a + b * b) / (2 * (K / 2) ** 2)));
-        s += sign * g * S[i + a][i + b];
-      }
+    for (let a = -K; a < K; a++) for (let b = -K; b < K; b++) s += kern[(a + K) * W + (b + K)] * S(i + a, i + b);
     nov[i] = Math.max(0, s);
   }
-  const mx = Math.max(1e-6, ...nov);
+  const mx = maxOf(nov, 1e-6);
   for (let i = 0; i < nb; i++) nov[i] /= mx;
   // Peaks at least minBars apart, above a threshold, snapped to the nearest downbeat.
   const minGap = 8 * bar;
+  const nearestDownbeat = (i: number) => {
+    if (!dbIdx.length) return i;
+    let lo = 0, hi = dbIdx.length - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (dbIdx[m] < i) lo = m + 1; else hi = m; }
+    const c = dbIdx[lo], p = dbIdx[Math.max(0, lo - 1)];
+    return Math.abs(p - i) < Math.abs(c - i) ? p : c;
+  };
   const peaks: number[] = [];
   for (let i = 1; i < nb - 1; i++)
     if (nov[i] > 0.25 && nov[i] >= nov[i - 1] && nov[i] >= nov[i + 1]) {
-      const snapped = dbIdx.reduce((best, d) => (Math.abs(d - i) < Math.abs(best - i) ? d : best), dbIdx[0] ?? i);
+      const snapped = nearestDownbeat(i);
       if (peaks.length && snapped - peaks[peaks.length - 1] < minGap) {
         if (nov[i] > nov[peaks[peaks.length - 1]]) peaks[peaks.length - 1] = snapped;
       } else peaks.push(snapped);
@@ -241,12 +269,12 @@ export function sections(beatFrames: number[], dbIdx: number[], bar: number, f: 
   // Cluster sections by mean feature similarity so repeats share a label.
   const means = boundaries.map((b0, i) => {
     const b1 = boundaries[i + 1] ?? nb;
-    const v = new Float32Array(feat[0].length);
-    for (let b = b0; b < b1; b++) for (let k = 0; k < v.length; k++) v[k] += feat[b][k];
+    const v = new Float32Array(D);
+    for (let b = b0; b < b1; b++) for (let k = 0; k < D; k++) v[k] += feat[b * D + k];
     let n = 0;
-    for (let k = 0; k < v.length; k++) n += v[k] * v[k];
+    for (let k = 0; k < D; k++) n += v[k] * v[k];
     n = Math.sqrt(n) || 1;
-    for (let k = 0; k < v.length; k++) v[k] /= n;
+    for (let k = 0; k < D; k++) v[k] /= n;
     return v;
   });
   const labels: string[] = [];
@@ -257,7 +285,6 @@ export function sections(beatFrames: number[], dbIdx: number[], bar: number, f: 
     if (best < 0) { reps.push(m); best = reps.length - 1; }
     labels.push(String.fromCharCode(65 + (best % 26)));
   }
-  void rmsPerBeat;
   return { boundaries, labels };
 }
 
@@ -275,18 +302,22 @@ function beatTime(onset: Float32Array, frame: number, frameRate: number): number
   return (b + frac) / frameRate + (N_FFT - HOP / 2) / SR;
 }
 
+/** Analyse decoded PCM. Pass one channel at 22,050 Hz when you can (the importer decodes that
+ *  way); other layouts are downmixed and resampled here. */
 export function analyzeMusic(channels: Float32Array[], srIn: number, onProgress?: (p: number) => void): MusicAnalysis {
   const x = resampleMono(channels, srIn);
   const duration = x.length / SR;
-  onProgress?.(0.1);
-  const f = features(x);
-  onProgress?.(0.5);
+  if (duration > MAX_SONG_SECONDS) throw new Error(`Songs longer than ${MAX_SONG_SECONDS / 60} minutes are not supported.`);
+  onProgress?.(0.02);
+  const f = features(x, SR, (p) => onProgress?.(0.02 + 0.58 * p));
+  onProgress?.(0.6);
   const tp = tempo(f.onset, f.frameRate);
   const beatFrames = trackBeats(f.onset, f.frameRate, tp.bpm);
   const beats = beatFrames.map((b) => beatTime(f.onset, b, f.frameRate));
-  onProgress?.(0.7);
+  onProgress?.(0.75);
   const db = downbeats(beatFrames, f);
   const downbeatTimes = db.downbeatIdx.map((i) => beats[i]);
+  const downbeatSet = new Set(db.downbeatIdx);
   // Energy per beat: loudness and brightness, smoothed per bar, normalized.
   const rmsPerBeat = beatFrames.map((bf, i) => {
     const b1 = beatFrames[i + 1] ?? f.rms.length;
@@ -295,10 +326,10 @@ export function analyzeMusic(channels: Float32Array[], srIn: number, onProgress?
     return n ? (s / n) * (1 + 0.0001 * (br / n)) : 0;
   });
   const smoothed = rmsPerBeat.map((_, i) => mean(rmsPerBeat.slice(Math.max(0, i - db.bar), i + db.bar + 1)));
-  const emax = Math.max(1e-6, ...smoothed);
+  const emax = maxOf(smoothed, 1e-6);
   const energy = smoothed.map((e) => e / emax);
-  const sec = sections(beatFrames, db.downbeatIdx, db.bar, f, rmsPerBeat);
-  onProgress?.(0.9);
+  const sec = sections(beatFrames, db.downbeatIdx, db.bar, f);
+  onProgress?.(0.95);
   const secs: MusicAnalysis["sections"] = sec.boundaries.map((b0, i) => {
     const b1 = sec.boundaries[i + 1] ?? beats.length;
     const e = mean(energy.slice(b0, b1));
@@ -307,16 +338,18 @@ export function analyzeMusic(channels: Float32Array[], srIn: number, onProgress?
   if (secs.length) { secs[0].start = 0; secs[secs.length - 1].end = duration; }
   // Accents: big rises in energy at section starts or over a bar.
   const accents: number[] = [];
-  for (let i = db.bar; i < energy.length; i++) if (energy[i] - energy[i - db.bar] > 0.3 && db.downbeatIdx.includes(i)) accents.push(beats[i]);
+  for (let i = db.bar; i < energy.length; i++) if (energy[i] - energy[i - db.bar] > 0.3 && downbeatSet.has(i)) accents.push(beats[i]);
   // Edges: leading and trailing silence, fade-out start.
-  const thr = 0.02 * Math.max(1e-6, ...Array.from(f.rms));
+  const peakRms = maxOf(f.rms, 1e-6);
+  const thr = 0.02 * peakRms;
   let lead = 0; while (lead < f.rms.length && f.rms[lead] < thr) lead++;
   let trail = f.rms.length - 1; while (trail > 0 && f.rms[trail] < thr) trail--;
-  const peakRms = Math.max(1e-6, ...Array.from(f.rms));
   let fade = trail;
   for (let i = trail; i > trail - f.frameRate * 20 && i > 0; i--) if (f.rms[i] > 0.5 * peakRms) { fade = i; break; }
-  // Loudness: K-weighted-ish RMS in dB (no true K filter; brightness-weighted approximation).
-  const lufs = 20 * Math.log10(Math.max(1e-6, Math.sqrt(mean(Array.from(f.rms).map((r) => r * r))))) - 0.7;
+  // Loudness: RMS in dB (no true K filter; brightness-weighted approximation).
+  let ms = 0;
+  for (let i = 0; i < f.rms.length; i++) ms += f.rms[i] * f.rms[i];
+  const lufs = 20 * Math.log10(Math.max(1e-6, Math.sqrt(ms / Math.max(1, f.rms.length)))) - 0.7;
   // Waveform envelope for the timeline, 10 per second.
   const per = Math.round(SR / 10), waveform: number[] = [];
   for (let i = 0; i < x.length; i += per) { let p = 0; for (let k = i; k < Math.min(x.length, i + per); k++) p = Math.max(p, Math.abs(x[k])); waveform.push(p); }

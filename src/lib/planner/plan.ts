@@ -1,7 +1,7 @@
 // The automatic director (spec §5): plan(project, analysis, music, options) → slides. Pure and
 // deterministic: every random choice comes from the project's seed. Re-planning rewrites only
 // unlocked fields of existing slides (spec §8.2).
-import { clamp, type Box } from "$lib/util/math";
+import { clamp, fmtClock, type Box } from "$lib/util/math";
 import { Prng, hash32 } from "$lib/util/prng";
 import { curate } from "./curate";
 import { desiredDuration, treatmentMinimum } from "./durations";
@@ -140,6 +140,16 @@ export function plan(project: Project, analysis: Map<string, MediaAnalysis>, mus
   if (grid && project.fit === "show-to-music" && grid.beats.length > 2) {
     const slides = units.map((_, i) => ({ desired: desired[i], locked: locked[i], major: major[i], min: style.pace.min * 0.6 }));
     let r = fitToBeats(slides, { beats: grid.beats, downbeats: grid.downbeats, sections: grid.sections });
+    if (!r.ok && r.have > r.need * 1.6) {
+      // Far more music than the photos need: end the show early at a section boundary (or a
+      // downbeat) near the needed length and let the music fade out there (spec §5.5).
+      const cut = earlyCut(grid, r.need);
+      const short = fitToBeats(slides, { beats: grid.beats.slice(0, cut + 1), downbeats: grid.downbeats, sections: grid.sections });
+      if (short.ok || (short.starts.length && !r.starts.length)) {
+        warnings.push(`The photos need about ${fmt(r.need)}; the music is ${fmt(r.have)}, so it fades out at ${fmt(grid.beats[cut])}.`);
+        r = { ...short, ok: short.ok, need: r.need, have: r.have };
+      }
+    }
     if (!r.ok) {
       mismatch = { need: r.need, have: r.have };
       warnings.push(`The photos need about ${fmt(r.need)}; the music is ${fmt(r.have)}.`);
@@ -305,7 +315,23 @@ export function clipPick(m: MediaAnalysis, len: number): { in: number; out: numb
   return { in: best, out: best + len, speed: 1, gain: speech ? 1 : 0 };
 }
 
-const fmt = (s: number) => { const m = Math.floor(s / 60), r = Math.round(s - m * 60); return `${m}:${r < 10 ? "0" : ""}${r}`; };
+const fmt = (s: number) => fmtClock(s);
+
+/** Beat index to end the show on when the music outlasts the photos: the section boundary
+ *  within [need, 1.4 × need], else the downbeat nearest 1.1 × need, else the nearest beat. */
+function earlyCut(grid: MusicGrid, need: number): number {
+  const beats = grid.beats, t0 = beats[0];
+  const near = (t: number, ok: (i: number) => boolean) => {
+    let bi = -1, bd = Infinity;
+    for (let i = 1; i < beats.length; i++) { if (!ok(i)) continue; const d = Math.abs(beats[i] - t0 - t); if (d < bd) { bd = d; bi = i; } }
+    return bi;
+  };
+  const sec = near(need * 1.15, (i) => grid.sections.has(i) && beats[i] - t0 >= need && beats[i] - t0 <= need * 1.4);
+  if (sec > 0) return sec;
+  const db = near(need * 1.1, (i) => grid.downbeats.has(i) && beats[i] - t0 >= need * 0.95);
+  if (db > 0) return db;
+  return Math.max(1, near(need * 1.1, () => true));
+}
 
 /** Re-layout one slide's treatment at a new id (the inspector's "Try another" and manual picks). */
 export function relayout(project: Project, slide: Slide, m: MediaAnalysis, id: TreatmentId, amount: number, direction: number): Treatment {

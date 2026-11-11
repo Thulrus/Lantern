@@ -1,10 +1,30 @@
 # Lantern: development status and handoff
 
-Status as of 2026-11-10 (end of the first build session): **a working vertical slice.** Import
+Status as of 2026-11-10 (second session): **a working vertical slice, deployed on GitHub Pages, with music fixed.** Import
 photos and songs, get an automatically planned 2D show with beat-synced cuts, edit it in the
 editor, export an MP4. All of it was exercised end to end in headless Chromium by the Playwright
-test (`tests/e2e/show.spec.ts`) against the owner's local `example_photos/` folder. Nothing is
-deployed yet and nothing has been committed (the owner commits).
+test (`tests/e2e/show.spec.ts`) against the owner's local `example_photos/` folder. The owner
+has committed ("Basics working") and deployed to GitHub Pages.
+
+## Session 2 (2026-11-10): the music crash
+
+Adding a song crashed the owner's machine. The song was the local `example_photos/VideoMusic3.mp3`,
+a **3-hour, 258 MB** MP3: decoding it produced ~4 GB of PCM on the main thread, a second copy went
+to the worker, and the section detector built a beats × beats similarity matrix (~21,000², 1.8 GB).
+Fixes, all verified in headless Chromium against that file and a 4-minute excerpt of it:
+
+- `importSong` probes the duration with a media element before decoding and refuses songs over
+  `MAX_SONG_SECONDS` (30 min) with a message naming the length (shows as the import toast).
+- Analysis decode happens at 22,050 Hz (`decodeForAnalysis`), is downmixed to mono on the main
+  thread and transferred to the worker as one array. Playback and export still decode at full rate.
+- `src/lib/audio/analyze.ts`: flat typed arrays for mel/chroma, banded self-similarity for Foote
+  novelty, no `Math.max(...spread)` (it throws past ~100k frames), finer progress, worker `onerror`
+  rejects pending jobs. A 30-minute track: 7 s, +28 MB. Tests cover a 20-minute track and the limit.
+- Planner: when the music is more than 1.6× longer than the photos need, the show now ends at a
+  section boundary (or downbeat) near the needed length and the music fades out there, instead of
+  stretching every slide (8 photos on a 4-minute song used to give 30-second slides). Warning text
+  says where it fades. Also fixed the "3:60" clock formatting in mismatch warnings.
+- Peak Chromium RSS during the browser run: 1.5 GB (SwiftShader included).
 
 ## What exists
 
@@ -29,7 +49,7 @@ deployed yet and nothing has been committed (the owner commits).
 |---|---|---|
 | M0 | Feasibility spikes | Mostly done in-browser (see spec §13.1). Open: deployed-site isolation check, real-song beat accuracy, player compatibility of the MP4, Firefox/Safari matrix, GPU timings. |
 | M1 | Import, library, 2D show | Done except CLIP embeddings/tags (story order falls back to time + heuristics) and HEIC. |
-| M2 | Music | Done: analysis, fit, several songs with crossfades, mix in preview, basic corrections (tempo alt, grid shift, trims). No drag-to-correct sections yet. |
+| M2 | Music | Done: analysis, fit, several songs with crossfades, mix in preview, basic corrections (tempo alt, grid shift, trims), 30-minute song limit, early fade-out when music outlasts photos. No drag-to-correct sections, no section looping for "music to show", beat accuracy unmeasured on annotated songs. |
 | M3 | Editor | Largely done. Missing: project package (.lantern zip) export/import, batch-apply UI beyond multi-select edits, phone layout polish. |
 | M4 | Export | Core pipeline done and verified with ffprobe. Missing: golden-frame and A/V sync tests, worker-side rendering (export runs on the main thread with an OffscreenCanvas), WebCodecs frame-accurate video decode (uses `<video>` seeks). |
 | M5 | Depth Space | Not started (renderer and planner already carry the depth path; the Depth stage, maps upload and 3D treatments activation are missing). |
@@ -58,7 +78,7 @@ deployed yet and nothing has been committed (the owner commits).
 
 ## Next steps
 
-1. Push to GitHub, enable Pages, and verify cross-origin isolation and model fetches on the deployed site (spec §2.1).
+1. Verify cross-origin isolation and model fetches on the deployed Pages site (spec §2.1); the owner reports the deploy works, isolation is unchecked.
 2. Measure beat accuracy on real songs (spec §6.2 targets) and GPU render/export speed; record in spec §13.1.
 3. M5 Depth Space: Depth Anything V2 Small on ONNX Runtime Web (registry entry exists, checksum not pinned), maps textures, enable depth treatments and depth transitions.
 4. CLIP ViT-B/32 image tower + build-time tag embeddings (`npm run tags` is declared but the script does not exist yet).

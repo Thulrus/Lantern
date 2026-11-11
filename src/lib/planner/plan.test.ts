@@ -157,3 +157,21 @@ describe("plan", () => {
     }
   });
 });
+
+describe("music longer than the photos", () => {
+  it("ends the show early instead of stretching every slide", () => {
+    const media = Array.from({ length: 6 }, (_, i) => `h${i}`);
+    const analysis = new Map(media.map((h, i) => [h, photo(i)]));
+    const music = new Map([["s", clickMusic(100, 240)]]);
+    const p = project(media, { songs: [{ hash: "s", trimIn: 0, trimOut: 0, gain: 1, fadeIn: 0, fadeOut: 3 }] });
+    const r = plan(p, analysis, music);
+    const end = r.slides[r.slides.length - 1].start + r.slides[r.slides.length - 1].dur;
+    expect(end).toBeLessThan(90);
+    for (const s of r.slides) expect(s.dur).toBeLessThanOrEqual(12);
+    expect(r.warnings.some((w) => /fades out/.test(w))).toBe(true);
+    p.slides = r.slides;
+    const tl = compile(p, analysis, music);
+    expect(tl.dur).toBeCloseTo(end, 3);
+    expect(tl.audio[0].out - tl.audio[0].in).toBeCloseTo(end, 3);
+  });
+});

@@ -511,6 +511,13 @@ interface Style {
 - Import MP3, AAC/M4A, WAV, FLAC, OGG/Opus (whatever `decodeAudioData` handles [verify per
   browser]).
 - A show has an ordered list of songs. Per song: trim in and out, gain, fade in and out.
+- **Length limit: 30 minutes per song** (added 2026-11-10 after a 3-hour MP3 exhausted memory:
+  `decodeAudioData` holds the whole file as 32-bit PCM, so a 3-hour stereo file at 48 kHz is
+  4 GB before analysis even starts). The importer reads the duration from a media element
+  first and refuses longer files with a message that names the length. For analysis the song is
+  decoded straight to 22,050 Hz, downmixed to one channel on the main thread and transferred to
+  the worker, whose memory stays linear in the song's length (flat feature arrays, a banded
+  self-similarity matrix for sections).
 - Loudness: estimate each song's integrated loudness (K-weighted RMS approximation of LUFS) and
   normalize songs to the same level by default.
 
@@ -876,7 +883,7 @@ list stays open.
 | Spike | Result |
 |---|---|
 | Face detection | MediaPipe Face Detector (short range, Apache-2.0, 230 KB, SHA-256 pinned in `src/lib/models/registry.ts`) runs in the analysis worker with a tiled second pass; 23 of 23 test photos analysed, 8 faces found in a 8-person group shot. **Caveat:** MediaPipe loads its WASM glue with `importScripts`, so the worker must be a classic (iife) worker; Vite's dev server forces module workers, where Lantern falls back to the main thread. CORS from `storage.googleapis.com` is fine; weights should still move to a project-owned Hugging Face repo (§2.1), and the CSP currently allows both hosts. |
-| Beat tracking | Classical DSP (log-mel flux → tempogram → Ellis DP → downbeat phase → Foote sections) on a 128 BPM click track: tempo within 0.4 %, > 85 % of beats within 20 ms after calibrating the onset frame to the window tail, section boundary within one bar of a timbre change. 60 s of audio analyses in well under a second in a worker. Real-song accuracy (§6.2 targets) is **not yet measured**. |
+| Beat tracking | Classical DSP (log-mel flux → tempogram → Ellis DP → downbeat phase → Foote sections) on a 128 BPM click track: tempo within 0.4 %, > 85 % of beats within 20 ms after calibrating the onset frame to the window tail, section boundary within one bar of a timbre change. 60 s of audio analyses in well under a second in a worker. Real-song accuracy (§6.2 targets) is **not yet measured**. Real song (2026-11-10, after the long-song fix): a 4-minute MP3 excerpt analysed in about 2 s in headless Chromium (84 BPM; accuracy still unmeasured against annotations); a 30-minute synthetic track in 7 s with under 30 MB extra memory. |
 | Renderer | Single WebGL2 path for preview and export (`src/lib/render/renderer.ts`): depth-displaced mesh with a flat stand-in map, letterbox fill, crossfade / dip / push / whip in a composite pass, captions, film grade. 13–23 fps on SwiftShader at 1080p-class canvas; needs measuring on a GPU. |
 | Export | WebCodecs via Mediabunny: a 24 s 1080p30 show → MP4 (H.264 + Opus, 17 MB) in 82 s on software encode; ffprobe reports 720 frames, 24.000 s, both streams present. AAC was not available in headless Chromium (Opus in MP4 was chosen automatically). Save picker streaming works in Chromium; a download fallback exists. **Not yet tested:** QuickTime/VLC/phone playback, A/V sync measurement, Firefox and Safari. |
 | Pages isolation | The service worker (`public/sw.js`) adds COOP/COEP (`credentialless`) and caches the app shell; the app reloads once after first activation. The WASM path is single-threaded without it. **Not yet verified on the deployed site** (nothing is deployed yet). |

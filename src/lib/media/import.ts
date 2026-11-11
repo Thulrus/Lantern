@@ -7,6 +7,7 @@ import { decodePhoto, probeVideo, readExif, resizeBitmap, encodeWebp, THUMB_EDGE
 import { mediaDb, originalsDb, songsDb, type MediaRecord } from "$lib/store/db";
 import { putFile } from "$lib/store/opfs";
 import type { MediaInfo, MusicAnalysis, SongInfo } from "$lib/planner/types";
+import { MAX_SONG_SECONDS, SR as ANALYSIS_SR } from "$lib/audio/analyze";
 import MusicWorker from "../../workers/music.worker?worker";
 
 export const PHOTO_EXT = /\.(jpe?g|png|webp|avif|heic|heif|gif|bmp)$/i;
@@ -132,7 +133,8 @@ let musicWorker: Worker | null = null;
 let musicJob = 0;
 const musicWaiting = new Map<number, { resolve: (a: MusicAnalysis) => void; reject: (e: Error) => void; progress?: (p: number) => void }>();
 
-export function analyzeSongBuffer(buf: AudioBuffer, progress?: (p: number) => void): Promise<MusicAnalysis> {
+/** Analyse one mono channel in the worker. The array is transferred, not copied. */
+export function analyzeSongSamples(mono: Float32Array, sampleRate: number, progress?: (p: number) => void): Promise<MusicAnalysis> {
   musicWorker ??= (() => {
     const w = new MusicWorker();
     w.onmessage = (e: MessageEvent<{ id: number; result?: MusicAnalysis; error?: string; progress?: number }>) => {
@@ -142,31 +144,83 @@ export function analyzeSongBuffer(buf: AudioBuffer, progress?: (p: number) => vo
       musicWaiting.delete(e.data.id);
       if (e.data.error) p.reject(new Error(e.data.error)); else p.resolve(e.data.result!);
     };
+    w.onerror = (e) => {
+      // The worker itself failed (bad bundle, out of memory): fail every pending job.
+      for (const [id, p] of musicWaiting) { musicWaiting.delete(id); p.reject(new Error(e.message || "music analysis failed")); }
+      musicWorker = null;
+    };
     return w;
   })();
-  const channels: Float32Array[] = [];
-  for (let c = 0; c < Math.min(2, buf.numberOfChannels); c++) channels.push(buf.getChannelData(c).slice());
   const id = ++musicJob;
   return new Promise((resolve, reject) => {
     musicWaiting.set(id, { resolve, reject, progress });
-    musicWorker!.postMessage({ id, channels, sampleRate: buf.sampleRate }, channels.map((c) => c.buffer));
+    musicWorker!.postMessage({ id, channels: [mono], sampleRate }, [mono.buffer]);
   });
 }
 
+export function analyzeSongBuffer(buf: AudioBuffer, progress?: (p: number) => void): Promise<MusicAnalysis> {
+  return analyzeSongSamples(downmix(buf), buf.sampleRate, progress);
+}
+
+/** Average the first two channels into one new array (safe to transfer). */
+export function downmix(buf: AudioBuffer): Float32Array {
+  const n = buf.length, ch = Math.min(2, buf.numberOfChannels);
+  const mono = new Float32Array(n);
+  for (let c = 0; c < ch; c++) { const d = buf.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / ch; }
+  return mono;
+}
+
+/** The song's length without decoding it: a media element reads only the headers. Resolves to
+ *  NaN when the browser can't tell (then the decode's own duration is checked instead). */
+export function probeAudioDuration(blob: Blob, timeoutMs = 8000): Promise<number> {
+  if (typeof document === "undefined") return Promise.resolve(NaN);
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(blob);
+    const el = document.createElement("audio");
+    el.preload = "metadata";
+    let done = false;
+    const finish = (d: number) => { if (done) return; done = true; clearTimeout(timer); el.removeAttribute("src"); el.load(); URL.revokeObjectURL(url); resolve(d); };
+    const timer = setTimeout(() => finish(NaN), timeoutMs);
+    el.onloadedmetadata = () => finish(Number.isFinite(el.duration) ? el.duration : NaN);
+    el.onerror = () => finish(NaN);
+    el.src = url;
+  });
+}
+
+const fmtLong = (s: number) => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60; return h ? `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}` : `${m}:${String(r).padStart(2, "0")}`; };
+const tooLong = (d: number) => new Error(`Songs longer than ${MAX_SONG_SECONDS / 60} minutes are not supported (this one is ${fmtLong(d)}). Trim it first.`);
+
+/** Decode for playback and export, at the file's own sample rate (or the platform default). */
 export async function decodeAudio(blob: Blob): Promise<AudioBuffer> {
   const ctx = new OfflineAudioContext(1, 1, 44100);
   return ctx.decodeAudioData(await blob.arrayBuffer());
+}
+
+/** Decode for analysis: the browser resamples to 22,050 Hz while decoding, which holds a
+ *  quarter of the memory of a 48 kHz decode and gives a better resampler than ours. Falls back
+ *  to the default rate where a context can't be made at 22,050 Hz. */
+export async function decodeForAnalysis(blob: Blob): Promise<AudioBuffer> {
+  const bytes = await blob.arrayBuffer();
+  let ctx: OfflineAudioContext;
+  try { ctx = new OfflineAudioContext(1, 1, ANALYSIS_SR); } catch { ctx = new OfflineAudioContext(1, 1, 44100); }
+  return ctx.decodeAudioData(bytes);
 }
 
 export async function importSong(file: File, handle?: FileSystemFileHandle, onProgress?: (p: number) => void): Promise<string> {
   const hash = await hashFile(file);
   const existing = await songsDb.get(hash);
   if (existing?.analysis) return hash;
-  const buf = await decodeAudio(file);
+  // Refuse very long files before touching their samples: a 3-hour mix decodes to gigabytes.
+  const probed = await probeAudioDuration(file);
+  if (probed > MAX_SONG_SECONDS) throw tooLong(probed);
+  let buf: AudioBuffer | null = await decodeForAnalysis(file);
+  if (buf.duration > MAX_SONG_SECONDS) throw tooLong(buf.duration);
   const info: SongInfo = { hash, name: file.name.replace(/\.[^.]+$/, ""), duration: buf.duration, bytes: file.size };
+  const mono = downmix(buf), sampleRate = buf.sampleRate;
+  buf = null; // let the decoded channels go before the analysis runs
   await originalsDb.put(hash, file);
   await songsDb.put({ info, handle });
-  const analysis = await analyzeSongBuffer(buf, onProgress);
+  const analysis = await analyzeSongSamples(mono, sampleRate, onProgress);
   await songsDb.put({ info, handle, analysis });
   return hash;
 }

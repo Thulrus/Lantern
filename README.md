@@ -17,6 +17,8 @@ it's ready, export it as a video file.
 **Your photos never leave your device.** There's no account, no upload and no server. Lantern is a
 static web page; all analysis, rendering and video encoding runs locally in your browser.
 
+Try it [on GitHub Pages](https://thulrus.github.io/Lantern/).
+
 > **Status:** early development. The first vertical slice works: import photos and songs, the
 > automatic 2D director with beat-synced cuts, the editor and MP4 export. Depth Space (3D),
 > generative fills and video clips are next. See [`lantern-spec.md`](lantern-spec.md) for the plan

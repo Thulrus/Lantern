@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analyzeMusic, SR } from "./analyze";
+import { analyzeMusic, MAX_SONG_SECONDS, SR } from "./analyze";
 
 /** A synthetic click track: short decaying noise bursts at a known tempo, with a timbre change
  *  (added low tone) at a known time, so sections should split there. */
@@ -45,4 +45,22 @@ describe("music analysis", () => {
     const ok = Math.abs(a.tempo - 72) / 72 < 0.04 || Math.abs(a.tempo - 144) / 144 < 0.04;
     expect(ok).toBe(true);
   }, 60_000);
+});
+
+describe("long songs", () => {
+  it("analyses a 20-minute track with memory linear in its length", () => {
+    const n = SR * 1200, x = new Float32Array(n), period = (60 / 110) * SR;
+    let s = 1; const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296 - 0.5; };
+    for (let i = 0; i < n; i++) { const ph = i % period; x[i] = (ph < 1200 ? rnd() * Math.exp(-ph / 250) : 0) + 0.15 * Math.sin((2 * Math.PI * (Math.floor(i / (SR * 40)) % 2 ? 110 : 220) * i) / SR); }
+    const before = process.memoryUsage().rss;
+    const a = analyzeMusic([x], SR);
+    expect(Math.abs(a.tempo - 110) / 110).toBeLessThan(0.04);
+    expect(a.beats.length).toBeGreaterThan(2000);
+    // The old beats × beats similarity matrix alone would have taken ~20 MB here and grown quadratically.
+    expect(process.memoryUsage().rss - before).toBeLessThan(400e6);
+  }, 120_000);
+
+  it("refuses songs over the length limit", () => {
+    expect(() => analyzeMusic([new Float32Array(SR * (MAX_SONG_SECONDS + 10))], SR)).toThrow(/longer than/);
+  });
 });
