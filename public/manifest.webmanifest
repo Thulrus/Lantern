@@ -1,0 +1,10 @@
+{
+  "name": "Lantern",
+  "short_name": "Lantern",
+  "description": "Slideshows that build themselves, entirely in your browser.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#0e0e12",
+  "theme_color": "#0e0e12",
+  "icons": [{ "src": "favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

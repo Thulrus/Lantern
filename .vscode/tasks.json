@@ -1,0 +1,101 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Install dependencies",
+      "type": "npm",
+      "script": "install",
+      "problemMatcher": [],
+      "detail": "npm install (also installs Playwright's package; run 'Install Playwright browsers' once)"
+    },
+    {
+      "label": "Install Playwright browsers",
+      "type": "shell",
+      "command": "npx playwright install chromium",
+      "problemMatcher": [],
+      "detail": "One-time download of headless Chromium for the e2e test"
+    },
+    {
+      "label": "Dev server",
+      "type": "npm",
+      "script": "dev",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": { "regexp": "^\\s*(.*?):(\\d+):(\\d+):\\s+(.*)$", "file": 1, "line": 2, "column": 3, "message": 4 },
+        "background": { "activeOnStart": true, "beginsPattern": "VITE v", "endsPattern": "Local:" }
+      },
+      "presentation": { "panel": "dedicated", "reveal": "always" },
+      "detail": "vite with HMR at http://localhost:5173 (copies WASM runtimes first)"
+    },
+    {
+      "label": "Type check",
+      "type": "npm",
+      "script": "check",
+      "group": { "kind": "test", "isDefault": false },
+      "problemMatcher": {
+        "owner": "svelte-check",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": { "regexp": "^\\d+ (ERROR|WARNING) \"(.*)\" (\\d+):(\\d+) \"(.*)\"$", "severity": 1, "file": 2, "line": 3, "column": 4, "message": 5 }
+      },
+      "detail": "svelte-check with strict TypeScript"
+    },
+    {
+      "label": "Unit tests",
+      "type": "npm",
+      "script": "test",
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": [],
+      "detail": "Vitest: planner, music DSP, camera model"
+    },
+    {
+      "label": "Unit tests (watch)",
+      "type": "npm",
+      "script": "test:watch",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated" },
+      "detail": "Vitest in watch mode"
+    },
+    {
+      "label": "End-to-end test",
+      "type": "npm",
+      "script": "e2e",
+      "group": "test",
+      "problemMatcher": [],
+      "detail": "Playwright in headless Chromium: imports example_photos/, makes a show, exports an MP4 (takes a few minutes)"
+    },
+    {
+      "label": "Build",
+      "type": "npm",
+      "script": "build",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": [],
+      "detail": "Production build into dist/"
+    },
+    {
+      "label": "Preview build",
+      "type": "npm",
+      "script": "preview",
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": { "panel": "dedicated" },
+      "dependsOn": ["Build"],
+      "detail": "Serve dist/ at http://localhost:4173 (service worker active, like Pages)"
+    },
+    {
+      "label": "Copy WASM runtimes",
+      "type": "shell",
+      "command": "node scripts/copy-wasm.mjs",
+      "problemMatcher": [],
+      "detail": "Refresh public/vendor from node_modules after a dependency update"
+    },
+    {
+      "label": "Check all",
+      "dependsOrder": "sequence",
+      "dependsOn": ["Type check", "Unit tests", "Build"],
+      "problemMatcher": [],
+      "detail": "What CI runs: type check, unit tests, build"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.vite/
+coverage/
+playwright-report/
+test-results/
+*.log
+.DS_Store
+
+# Model weights are downloaded at runtime, never committed (spec §2.1)
+*.onnx
+*.tflite
+*.task
+/models/
+
+# Local test photos only (spec §12: no real photos in the repo)
+/example_photos/
+
+# Copied from node_modules by scripts/copy-wasm.mjs
+/public/vendor/

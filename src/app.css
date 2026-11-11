@@ -1,0 +1,36 @@
+:root {
+  color-scheme: dark;
+  --bg: #0e0e12; --panel: #15151c; --panel2: #1c1c25; --line: #2a2a36; --text: #ececf1; --dim: #9a9aae;
+  --accent: #f3b64b; --accent2: #5b8def; --danger: #e5604f; --ok: #5ec07a;
+  --radius: 12px;
+  font-family: "Lantern Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px; line-height: 1.45;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+#app { height: 100%; }
+button { font: inherit; color: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--panel2); border-radius: 9px; padding: 7px 12px; }
+button:hover { background: #242430; }
+button:disabled { opacity: .45; cursor: default; }
+button.primary { background: var(--accent); color: #1a1205; border-color: transparent; font-weight: 600; }
+button.primary:hover { background: #ffc965; }
+button.ghost { background: transparent; border-color: transparent; }
+button.ghost:hover { background: #ffffff12; }
+button.danger { color: var(--danger); }
+input, select, textarea { font: inherit; color: inherit; background: #111116; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+input[type="range"] { padding: 0; width: 100%; accent-color: var(--accent); }
+h1, h2, h3 { margin: 0 0 8px; font-weight: 600; }
+h1 { font-size: 26px; } h2 { font-size: 18px; } h3 { font-size: 14px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+p { margin: 0 0 10px; }
+a { color: var(--accent2); }
+.row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.col { display: flex; flex-direction: column; gap: 8px; }
+.dim { color: var(--dim); }
+.small { font-size: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; }
+.toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #23232e; border: 1px solid var(--line); padding: 10px 16px; border-radius: 10px; z-index: 100; box-shadow: 0 8px 30px #0008; }
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label, .field .lbl { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+.lock { border: 0; background: transparent; padding: 0 4px; font-size: 12px; color: var(--dim); }
+.lock.on { color: var(--accent); }
+::-webkit-scrollbar { width: 10px; height: 10px; } ::-webkit-scrollbar-thumb { background: #2e2e3a; border-radius: 6px; }
