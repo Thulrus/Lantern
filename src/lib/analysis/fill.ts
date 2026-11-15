@@ -1,5 +1,5 @@
 // Generative background fill (spec §1.2, §4.6, M6): LaMa (Apache-2.0, big-lama, ONNX export by
-// Carve, fixed 512 × 512) fills the hole behind the subject so parallax reveals a plausible
+// Carve with fp16-stored weights, hosted in the owner's HF repo, fixed 512 × 512) fills the hole behind the subject so parallax reveals a plausible
 // background instead of a blurred rim. Runs in the analysis worker on ONNX Runtime Web. Inputs
 // `image` f32 [1,3,512,512] in 0–1 with hole pixels zeroed, `mask` f32 [1,1,512,512] with 1 = fill;
 // output `output` f32 [1,3,512,512] in 0–255 (verified 2026-11-14). MI-GAN was tried first and

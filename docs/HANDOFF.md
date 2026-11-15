@@ -13,7 +13,7 @@ plates on the example photos pass the guard; arc end frames show clean edges, no
 Not yet seen on a GPU or in a real (non-headless) browser by the owner.
 
 - **Fill model: LaMa** (`src/lib/analysis/fill.ts`, registry `lama-512`): Carve's ONNX export of
-  big-lama, Apache-2.0, 208 MB fp32, pinned to HF commit `c3c0c9e`. Fixed 512²: `image` f32 0–1 with
+  big-lama, Apache-2.0; now 106 MB fp16-stored weights from the owner's repo (see below). Fixed 512²: `image` f32 0–1 with
   hole pixels zeroed, `mask` f32 1 = fill, `output` f32 0–255. ~6 s per photo on one CPU thread
   (Node); the e2e run took ~5.5 min for 24 photos including the download. A square crop around
   the hole (+ pad) is scaled to 512 and back; only hole pixels are kept → `plategen.webp`.
@@ -39,11 +39,11 @@ Not yet seen on a GPU or in a real (non-headless) browser by the owner.
 - `frames.spec.ts`: `FRAMES_FILL=1` turns fill on, prints `[fill]` rejections, dumps `NN-people.png`,
   `NN-plategen.webp`, `NN-plategen.rejected.webp`. Pass `--timeout 1500000` (LaMa is slow).
 
-Smaller LaMa (2026-11-14, after the commit): 8-bit dynamic quantization is unusable (green
-checkerboard, error > 100 levels). fp16-stored weights with load-time Casts to fp32
-(`convert_fp16_weights.py`) give 106 MB, SHA-256 `e631637d…ecab`, mean error 0.56, same speed. The
-owner is uploading it to an HF repo under `HiggityPiggity`; once there, point registry `lama-512`
-at `resolve/<commit>/lama_fp16w.onnx` with that size and SHA-256.
+Smaller LaMa: 8-bit dynamic quantization is unusable (green checkerboard, error > 100 levels).
+fp16-stored weights with load-time Casts to fp32 (`convert_fp16_weights.py` in the repo) give
+106 MB, mean error 0.56/255, same speed. Hosted at `HiggityPiggity/lama-onnx-fp16` (owner's HF
+account, public, Apache-2.0); registry `lama-512` pins commit `feb119a` and SHA-256 `e631637d…ecab`
+(verified by download).
 
 Next for M6: WebGPU
 provider for speed; mirrored crops at frame edges (spec §4.6); margins / Extend; the

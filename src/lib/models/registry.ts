@@ -52,11 +52,11 @@ export const MODELS: ModelSpec[] = [
     note: "Coarse person mask so depth mattes keep whole people.",
   },
   {
-    id: "lama-512", task: "inpaint", name: "LaMa big (ONNX fp32, 512 × 512)",
-    url: "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx",
-    bytes: 208044816, sha256: "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
-    license: "Apache-2.0", source: "https://huggingface.co/Carve/LaMa-ONNX", tier: "all",
-    note: "Generative background fill behind people (opt-in). MI-GAN (MIT) was tried and rejected: figure-like blobs in person-sized holes. An 8-bit export would be ~4× smaller but needs a host.",
+    id: "lama-512", task: "inpaint", name: "LaMa big (ONNX, fp16-stored weights, 512 × 512)",
+    url: "https://huggingface.co/HiggityPiggity/lama-onnx-fp16/resolve/feb119a90ac45e7648aa5976559d481a5e9a4a48/lama_fp16w.onnx",
+    bytes: 106291403, sha256: "e631637d760e3fa708c059ebc304c66a4867f00ad0891cf4fc0849966a42ecab",
+    license: "Apache-2.0", source: "https://huggingface.co/HiggityPiggity/lama-onnx-fp16", tier: "all",
+    note: "Generative background fill behind people (opt-in). Carve/LaMa-ONNX lama_fp32.onnx with weights stored as fp16 and cast to fp32 at load (owner's repo; mean error 0.56/255). MI-GAN (MIT) was rejected: figure-like blobs in person-sized holes; 8-bit LaMa is unusable.",
   },
   {
     id: "clip-vit-b32-vision", task: "embedding", name: "CLIP ViT-B/32 image tower (ONNX, quantized)",
