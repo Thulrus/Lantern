@@ -28,7 +28,15 @@ test("dump 3D frames", async ({ page }) => {
   await page.getByText("Make my show").click();
   await page.waitForURL(/#\/edit\//);
   await expect(page.locator(".board .card").first()).toBeVisible({ timeout: 30_000 });
+  // FRAMES_FILL=1: generative fill behind people on, and wait for the fill stage too.
+  page.on("console", (m) => { if (m.text().startsWith("[fill]")) console.log(m.text()); });   // reasons and face boxes of rejected fills
+  if (process.env.FRAMES_FILL) await page.evaluate(() => (globalThis as any).lantern.setGenerativeFill("all")); // eslint-disable-line
   await page.waitForFunction(() => /depth done/.test(document.body.innerText), null, { timeout: 600_000 });
+  if (process.env.FRAMES_FILL) {
+    await page.waitForFunction(() => (globalThis as any).lantern.queue?.queued === 0, null, { timeout: 600_000 }); // eslint-disable-line
+    const st = await page.evaluate(() => [...(globalThis as any).lantern.stageStatus].filter(([k]: [string]) => k.endsWith("|fill")).map(([k, v]: [string, string]) => `${k.slice(0, 8)} ${v}`)); // eslint-disable-line
+    console.log("fill stages:", st.join(", "));
+  }
   await page.waitForTimeout(1500);
   const frames = await page.evaluate(async ({ treatments, pick, transition }) => {
     type Any = any; // eslint-disable-line
@@ -105,10 +113,16 @@ test("dump 3D frames", async ({ page }) => {
         const dv = new DataView(buf); const w = dv.getUint16(4, true), h = dv.getUint16(6, true); const a = new Uint8Array(buf.slice(8));
         await show("matte", w, h, (k) => a[k]);
       }
-      if (files.includes("plate.webp")) {
-        const f = await (await dir.getFileHandle("plate.webp")).getFile();
+      if (files.includes("people.u8.gz")) {
+        const f = await (await dir.getFileHandle("people.u8.gz")).getFile();
+        const buf = await new Response(f.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+        const dv = new DataView(buf); const w = dv.getUint16(4, true), h = dv.getUint16(6, true); const a = new Uint8Array(buf.slice(8));
+        await show("people", w, h, (k) => a[k]);
+      }
+      for (const pf of ["plate.webp", "plategen.webp", "plategen.rejected.webp"]) if (files.includes(pf)) {
+        const f = await (await dir.getFileHandle(pf)).getFile();
         const b64 = await new Promise<string>((r) => { const fr = new FileReader(); fr.onload = () => r((fr.result as string).split(",")[1]); fr.readAsDataURL(f); });
-        res.push({ name: `${String(i).padStart(2, "0")}-plate.webp`, data: b64 });
+        res.push({ name: `${String(i).padStart(2, "0")}-${pf}`, data: b64 });
       }
       if (files.includes("platedepth.u16.gz")) { const d = await u16("platedepth.u16.gz"); await show("platedepth", d.w, d.h, (k) => d.a[k] >> 8); }
     }

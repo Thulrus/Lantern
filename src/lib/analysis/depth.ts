@@ -6,7 +6,7 @@
 import * as ort from "onnxruntime-web/wasm";
 import { fetchModel } from "$lib/models/fetch";
 
-export const DEPTH_VERSION = 2;   // 2: layers (matte, plate, background depth) built with the map
+export const DEPTH_VERSION = 4;   // 4: whole people kept on one layer (person mask); 2: layers (matte, plate, background depth) built with the map; 3: plates inpainted by PatchMatch
 export const DEPTH_MODEL = "depth-anything-v2-small";
 export const DEPTH_EDGE_FULL = 518, DEPTH_EDGE_LITE = 392;
 const MAX_LONG = 826;             // 59 × 14: wide panoramas get a shorter short edge instead
@@ -15,18 +15,23 @@ const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
 let session: ort.InferenceSession | null = null;
 let loading: Promise<ort.InferenceSession> | null = null;
 
+/** Point ONNX Runtime at the vendored .wasm and pick the thread count; shared by every ORT model. */
+export function configureOrt(base: string, threads: boolean): void {
+  // Only the .wasm comes from public/vendor: the JS glue is embedded in the "bundle" build we
+  // import, and naming a prefix here would make ORT import() the glue from /vendor instead,
+  // which Vite's dev server refuses for files in public/.
+  ort.env.wasm.wasmPaths = { wasm: base + "vendor/ort/ort-wasm-simd-threaded.wasm" };
+  // Threads need cross-origin isolation. Some builds hang in session creation with threads on
+  // (seen in headless Chromium), so the queue retries single-threaded when a job stalls.
+  const isolated = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
+  ort.env.wasm.numThreads = isolated && threads ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+  ort.env.wasm.proxy = false;
+}
+
 export async function loadDepth(base: string, threads: boolean, onProgress?: (done: number, total: number) => void): Promise<ort.InferenceSession> {
   if (session) return session;
   loading ??= (async () => {
-    // Only the .wasm comes from public/vendor: the JS glue is embedded in the "bundle" build we
-    // import, and naming a prefix here would make ORT import() the glue from /vendor instead,
-    // which Vite's dev server refuses for files in public/.
-    ort.env.wasm.wasmPaths = { wasm: base + "vendor/ort/ort-wasm-simd-threaded.wasm" };
-    // Threads need cross-origin isolation. Some builds hang in session creation with threads on
-    // (seen in headless Chromium), so the queue retries single-threaded when a job stalls.
-    const isolated = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
-    ort.env.wasm.numThreads = isolated && threads ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
-    ort.env.wasm.proxy = false;
+    configureOrt(base, threads);
     const buf = await fetchModel(DEPTH_MODEL, onProgress);
     const opts: ort.InferenceSession.SessionOptions = { executionProviders: ["wasm"], graphOptimizationLevel: "all" };
     try {

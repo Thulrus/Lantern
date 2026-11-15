@@ -48,6 +48,12 @@ export async function getFile(hash: string, name: string): Promise<Blob | null> 
   }
 }
 
+export async function deleteFile(hash: string, name: string): Promise<void> {
+  const d = await mediaDir(hash, false);
+  if (!d) { await blobDb.removePrefix(`${hash}/${name}`); return; }
+  try { await d.removeEntry(name); } catch { /* not there */ }
+}
+
 export async function removeMedia(hash: string): Promise<void> {
   const r = await dir();
   if (!r) { await blobDb.removePrefix(hash + "/"); return; }

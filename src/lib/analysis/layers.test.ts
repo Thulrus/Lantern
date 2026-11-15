@@ -103,3 +103,15 @@ describe("layers", () => {
     expect(F.bgDepth[0]).toBe(30000);
   });
 });
+
+describe("wholePeople", () => {
+  it("adds the rest of a mostly-held person and drops a mostly-missed one", async () => {
+    const { wholePeople } = await import("./layers");
+    const W = 60, H = 40, a = new Float32Array(W * H), p = new Uint8Array(W * H);
+    for (let y = 5; y < 35; y++) for (let x = 5; x < 15; x++) { p[y * W + x] = 255; if (y < 28) a[y * W + x] = 1; }   // 77 % held
+    for (let y = 5; y < 35; y++) for (let x = 35; x < 45; x++) { p[y * W + x] = 255; if (y < 10) a[y * W + x] = 1; }  // 17 % held
+    wholePeople(a, p, W, H);
+    expect(a[32 * W + 10]).toBe(1);
+    expect(a[7 * W + 40]).toBe(0);
+  });
+});

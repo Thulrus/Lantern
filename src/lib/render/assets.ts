@@ -12,13 +12,24 @@ import { composeMaps } from "$lib/analysis/layers";
 const AHEAD = 3, BEHIND = 1;
 type Want = { hash: string; video?: boolean; maps?: boolean; plate?: boolean };
 
+/** Generated plates (plategen.webp, spec §4.6) are used instead of the classical plate while the
+ *  project's generative fill reaches plates. `layerEpoch` bumps whenever that or a photo's plate
+ *  changes, so loaders re-upload layer textures. */
+let generatedPlates = false;
+let globalEpoch = 0;
+const hashEpoch = new Map<string, number>();
+export function setGeneratedPlates(on: boolean): void { if (on !== generatedPlates) { generatedPlates = on; globalEpoch++; } }
+export function invalidateLayers(hash: string): void { hashEpoch.set(hash, (hashEpoch.get(hash) ?? 0) + 1); }
+const epochOf = (hash: string) => `${globalEpoch}.${hashEpoch.get(hash) ?? 0}`;
+
 /** Read depth.u16.gz, platedepth.u16.gz and (with a subject layer) matte.u8.gz + plate.webp from
  *  OPFS and upload the maps texture "maps:<hash>" and the plate "plate:<hash>". Shared by the
  *  preview loader and the exporter. */
 export async function loadLayerTextures(r: Renderer, hash: string, plate: boolean): Promise<void> {
   const [dBlob, bgBlob, mBlob, pBlob] = await Promise.all([
     getFile(hash, "depth.u16.gz"), getFile(hash, "platedepth.u16.gz"),
-    plate ? getFile(hash, "matte.u8.gz") : null, plate ? getFile(hash, "plate.webp") : null,
+    plate ? getFile(hash, "matte.u8.gz") : null,
+    plate ? (generatedPlates ? getFile(hash, "plategen.webp") : Promise.resolve(null)).then((g) => g ?? getFile(hash, "plate.webp")) : null,
   ]);
   if (!dBlob) throw new Error("no depth file");
   const d = await decodeDepth(dBlob);
@@ -40,7 +51,8 @@ export class AssetLoader {
   private loading = new Map<string, Promise<void>>();
   private videos = new Map<string, HTMLVideoElement>();
   private order: string[] = [];
-  private failed = new Set<string>();
+  private failed = new Map<string, string>();   // key → layer epoch it failed at
+  private epochs = new Map<string, string>();   // maps key → layer epoch it was loaded at
   budget: number;
 
   constructor(private r: Renderer, opts: { budget?: number } = {}) { this.budget = opts.budget ?? 24; }
@@ -92,7 +104,7 @@ export class AssetLoader {
         bmp.close();
         this.order.push(hash);
       } catch {
-        this.failed.add(hash);
+        this.failed.set(hash, "");
       } finally {
         this.loading.delete(hash);
       }
@@ -103,11 +115,11 @@ export class AssetLoader {
 
   /** The maps texture (and plate) for a photo from its layer files; a missing file leaves the slide flat. */
   loadMaps(hash: string, plate: boolean): Promise<void> {
-    const key = "maps:" + hash;
-    if (this.r.has(key) || this.failed.has(key)) return Promise.resolve();
+    const key = "maps:" + hash, ep = epochOf(hash);
+    if ((this.r.has(key) && this.epochs.get(key) === ep) || this.failed.get(key) === ep) return Promise.resolve();
     let p = this.loading.get(key);
     if (p) return p;
-    p = loadLayerTextures(this.r, hash, plate).catch(() => { this.failed.add(key); }).finally(() => { this.loading.delete(key); });
+    p = loadLayerTextures(this.r, hash, plate).then(() => { this.epochs.set(key, ep); }, () => { this.failed.set(key, ep); }).finally(() => { this.loading.delete(key); });
     this.loading.set(key, p);
     return p;
   }

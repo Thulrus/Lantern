@@ -238,7 +238,7 @@ compatibility and size.
 | Pose | RTMPose or RTMO (Apache-2.0) ONNX | MediaPipe Pose Landmarker | Flicker's RTMW-x is heavy; a lighter body-only model is enough here. |
 | Subject matte | BiRefNet-lite (MIT), full tier | MediaPipe selfie / multiclass segmenter; MODNet (Apache-2.0) for portraits | BiRefNet-lite took ~450 ms per image on an RTX 3060 in Flicker; in a browser expect several times slower [verify]. Avoid RMBG weights (non-commercial). |
 | Depth | Depth Anything V2 **Small** (Apache-2.0; Base and Large are CC-BY-NC, so do not use them). Built: the 8-bit ONNX export from `onnx-community` (27 MB, SHA-256 pinned) on ONNX Runtime Web's WASM provider, short edge 518 px | the same model at 392 px | Flicker: Small was as good as Base. WebGPU provider with the fp16 export is a later speed-up. |
-| Background fill | MI-GAN (mobile inpainting, 512 px) [verify license] | LaMa big (Apache-2.0, 208 MB, full tier only) | Flicker used LaMa for plates and margins successfully. MI-GAN is far smaller; compare their quality on margins in Phase 0. Classical push-pull fill (Flicker `layers.py`) is the no-model fallback. |
+| Background fill | LaMa big (Apache-2.0, 208 MB fp32 ONNX, used for all tiers while opt-in; MI-GAN rejected 2026-11-14, see §4.6) | LaMa big (Apache-2.0, 208 MB, full tier only) | Flicker used LaMa for plates and margins successfully. MI-GAN is far smaller; compare their quality on margins in Phase 0. Classical push-pull fill (Flicker `layers.py`) is the no-model fallback. |
 | Embedding | CLIP ViT-B/32 image tower (MIT), quantized | none (order by time only) | Flicker used ViT-L/14 (98% usable); B/32 is the browser-sized compromise. MobileCLIP is an option if its license allows [verify]. |
 | Saliency | U²-Net-p (Apache-2.0, ~5 MB) | spectral-residual saliency (classical, no model) | |
 | Speech activity | Silero VAD (MIT, ~2 MB) | an energy-and-spectral-flatness heuristic | |
@@ -300,6 +300,12 @@ the main subject":
   the subject covers less than 0.4% or more than 72% of the frame. The pull-push fill is a blur of
   the rim: a wide parallax shows it as a soft band around the subject, which is why 3D amplitudes
   stay moderate until an inpainting model lands (M6).
+- **Built 2026-11-14 (session 6)**: LaMa plates (`src/lib/analysis/fill.ts`, stage `fill`,
+  opt-in), with a DeepLab v3 person mask keeping whole people on one layer and the person guard
+  below (EfficientDet-Lite0 boxes + face detector, faces limited to the photo's face scale).
+  MI-GAN (MIT, verified) was rejected: its ONNX pipeline leaks the pixels under the mask, and it
+  paints figure-like blobs into person-sized holes. The no-model plate is pull-push refined by
+  PatchMatch (`inpaint.ts`), never sourcing from person pixels.
 - Fill a square crop around the hole at the model's native size. Where the square runs past
   the frame, mirror the context *and the mask* (Flicker found that a mirrored subject leaked
   into the context otherwise).

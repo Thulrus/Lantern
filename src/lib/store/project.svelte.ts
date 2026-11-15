@@ -1,6 +1,7 @@
 // App state (Svelte 5 runes): the open project, its analysis, the timeline, undo and autosave.
 // Every edit goes through `edit()`, which records an undo step, locks the edited field on the
 // slide (spec §8.2) and autosaves.
+import { invalidateLayers, setGeneratedPlates } from "$lib/render/assets";
 import { AnalysisQueue, loadAnalysis, type StageStatus } from "$lib/analysis/queue";
 import { compile } from "$lib/planner/compile";
 import { plan, relayout, type PlanResult } from "$lib/planner/plan";
@@ -60,6 +61,7 @@ class AppState {
   private onStage(s: StageStatus): void {
     this.stageStatus.set(`${s.hash}|${s.stage}`, s.status);
     this.stageStatus = new Map(this.stageStatus);
+    if (s.stage === "fill" && s.status === "ok") invalidateLayers(s.hash);
     if (s.status === "ok" && this.project?.media.includes(s.hash)) {
       this.facesPending.add(s.hash);
       clearTimeout(this.replanTimer);
@@ -98,6 +100,7 @@ class AppState {
     await this.refreshMedia(p.media);
     await this.refreshSongs(p.songs.map((s) => s.hash));
     this.ensureQueue().enqueue(p.media);
+    this.applyFill();
     if (p.slides.length) this.recompile(); else this.replan({ silent: true });
   }
 
@@ -118,6 +121,19 @@ class AppState {
       if (s) { this.songs.set(h, s); if (s.analysis) this.music.set(h, s.analysis); }
     }
     this.songs = new Map(this.songs); this.music = new Map(this.music);
+  }
+
+  /** Generative fill reaches the plates behind people only in "all" (spec §4.6); margins are not built yet. */
+  private applyFill(): void {
+    if (!this.project) return;
+    const on = this.project.generativeFill === "all";
+    setGeneratedPlates(on);
+    this.ensureQueue().setFill(on, this.project.media);
+  }
+
+  setGenerativeFill(v: Project["generativeFill"]): void {
+    this.edit((p) => { p.generativeFill = v; });
+    this.applyFill();
   }
 
   /** Add media to the project (after import). */

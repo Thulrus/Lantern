@@ -1,10 +1,48 @@
 # Lantern: development status and handoff
 
-Status as of 2026-11-14 (fifth session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed, and Depth Space (M5) mostly built: depth, derived mattes and plates, two-layer meshes, depth wipe and fly-through.** Import
+Status as of 2026-11-14 (sixth session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed, and Depth Space (M5) mostly built: depth, derived mattes and plates, two-layer meshes, depth wipe and fly-through.** Import
 photos and songs, get an automatically planned 2D show with beat-synced cuts, edit it in the
 editor, export an MP4. All of it was exercised end to end in headless Chromium by the Playwright
 test (`tests/e2e/show.spec.ts`) against the owner's local `example_photos/` folder. The owner
 has committed ("Basics working") and deployed to GitHub Pages.
+
+## Session 6 (2026-11-14): generative fill behind people (M6)
+
+Opt-in (Show tab → Generative fill: Off / Behind people; project `generativeFill: "all"`). All 21
+plates on the example photos pass the guard; arc end frames show clean edges, no ghost cutouts.
+Not yet seen on a GPU or in a real (non-headless) browser by the owner.
+
+- **Fill model: LaMa** (`src/lib/analysis/fill.ts`, registry `lama-512`): Carve's ONNX export of
+  big-lama, Apache-2.0, 208 MB fp32, pinned to HF commit `c3c0c9e`. Fixed 512²: `image` f32 0–1 with
+  hole pixels zeroed, `mask` f32 1 = fill, `output` f32 0–255. ~6 s per photo on one CPU thread
+  (Node); the e2e run took ~5.5 min for 24 photos including the download. A square crop around
+  the hole (+ pad) is scaled to 512 and back; only hole pixels are kept → `plategen.webp`.
+  Soft/hazy deep inside big holes, which a move never uncovers; good near the edges.
+- **MI-GAN was tried and rejected** (MIT, 28 MB): its pipeline does not erase pixels under the
+  mask (the removed person leaked into the fill: invented figures in their colours), and even
+  with the hole greyed it paints dark figure-like blobs into person-sized holes, whatever the
+  mask's shape. A band-only fill over the classical plate came out flat. Notes in the registry.
+- **Whole people on one layer** (`wholePeople` in `layers.ts`): DeepLab v3 person mask (MediaPipe
+  Image Segmenter, Apache-2.0, 2.8 MB) runs before depth (`runSegment`), saved as `people.u8.gz`.
+  Each person blob joins the matte when the depth threshold already holds ≥ 50 % of it, else
+  leaves it. Fixes the depth matte slicing seated / partly hidden people. `DEPTH_VERSION` 4.
+- **Person guard** (all in the `fill` stage, `queue.ts`): EfficientDet-Lite0 person boxes
+  (Apache-2.0, 7.3 MB) on the original and the composite, face detector on the composite.
+  Rejected when a face ≥ 0.5 is ≥ 25 % inside generated pixels (faces larger than 2× the photo's
+  largest real face are texture: a 378 px "face" on fence posts), or a new person ≥ 0.5 is ≥ 25 %
+  inside and matches no original person that is mostly outside the hole. Person-mask blobs that
+  touch the hole are hidden from the model (`peopleKeepOut`), unless that hides over half the
+  crop's context. Three attempts with growing context (`FILL_ATTEMPTS`); the last rejected plate
+  is kept as `plategen.rejected.webp` and the reason logged as `[fill] …` for debugging.
+- **PatchMatch** (`inpaint.ts`) refines the classical plate, now never copying from person pixels.
+  Used when fill is off or rejected. Weak on very large holes (flat smear).
+- `frames.spec.ts`: `FRAMES_FILL=1` turns fill on, prints `[fill]` rejections, dumps `NN-people.png`,
+  `NN-plategen.webp`, `NN-plategen.rejected.webp`. Pass `--timeout 1500000` (LaMa is slow).
+
+Next for M6: an 8-bit LaMa (~55 MB) needs an owner-hosted HF repo (pinned weights only); WebGPU
+provider for speed; mirrored crops at frame edges (spec §4.6); margins / Extend; the
+"show generated pixels" overlay; plate depth from a depth pass on the plate. Undo of the fill
+switch does not re-run `applyFill` (switch it again).
 
 ## Session 5 (2026-11-14): owner's observations (`Observations.md`)
 
@@ -36,11 +74,7 @@ Done (unit tests 31/31, `npm run check` clean, `show.spec.ts` e2e passes; not ye
 
 Not done, for the next session:
 
-- **Ghost cutouts behind people in 3D moves** (owner): there is no generative fill yet (M6). The
-  plate is the pull-push blur of the hole's rim, which reads as a smudged silhouette when parallax
-  reveals it. Options: a classical PatchMatch/exemplar inpainting in the worker (no model, no
-  licence issue), or MI-GAN/LaMa (check licences, person guard per spec §1.2). Until then,
-  consider lowering ARC/CRANE/INFLATE further or dropping 3D on photos with large mattes.
+- ~~Ghost cutouts behind people in 3D moves~~: done in session 6 (PatchMatch plates).
 - **Music management** beyond the above: drag reorder, auditioning a song from the list, adding
   songs from the Music tab (today: library drawer only), suggesting how many photos/songs fit.
 - Title cards: no per-card subtitle or style (title vs chapter) choice; automatic chapter cards are
@@ -170,7 +204,7 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 | M3 | Editor | Largely done. Missing: project package (.lantern zip) export/import, batch-apply UI beyond multi-select edits, phone layout polish. |
 | M4 | Export | Core pipeline done and verified with ffprobe. Missing: golden-frame and A/V sync tests, worker-side rendering (export runs on the main thread with an OffscreenCanvas), WebCodecs frame-accurate video decode (uses `<video>` seeks). |
 | M5 | Depth Space | Mostly done: depth stage, depth-derived mattes and pull-push plates, two-layer meshes, depth wipe and fly-through, 3D treatments when depth and a style with `depthShare > 0` allow. Missing: disc DOF, a segmentation model for finer mattes (full tier), WebGPU provider, GPU timings, threshold tuning on more photos. |
-| M6 | Fills | Not started. |
+| M6 | Fills | Plates done (opt-in): LaMa fill, person segmentation keeps whole people on one layer, face + person guard, PatchMatch fallback. Missing: smaller/faster model, mirrored crops, margins/Extend, generated-pixels overlay, plate depth. |
 | M7 | Video | Partial: videos import, poster thumbnails, clip pick heuristics and ducking envelope exist; no video scan stage, so highlight picking uses the centre of the clip. |
 | M8 | Polish | Not started (people clusters, flipbooks, PWA icons, accessibility pass). |
 
@@ -200,7 +234,7 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 1. Verify cross-origin isolation and model fetches on the deployed Pages site (spec §2.1); the owner reports the deploy works, isolation is unchecked.
 2. Measure beat accuracy on real songs (spec §6.2 targets) and GPU render/export speed; record in spec §13.1.
 3. M5 Depth Space, finishing: look at real 3D moves on a GPU (the owner's machine) and tune `quality`/`sep` gates and amplitudes by eye; disc DOF; try the WebGPU provider with the fp16 export for speed; consider a person segmenter (MediaPipe multiclass, Apache-2.0) or BiRefNet-lite (MIT, full tier) to refine the depth-derived matte where people are present.
-3b. M6 Fills: an inpainting model (MI-GAN or LaMa) for plates and margins would remove the blurry band the pull-push fill leaves in the parallax zone; it is the biggest remaining visual gain for 3D.
+3b. M6 Fills, continuing: owner to eyeball fills on a GPU; 8-bit LaMa (needs a host), margins/Extend, the generated-pixels overlay, mirrored crops at frame edges.
 4. CLIP ViT-B/32 image tower + build-time tag embeddings (`npm run tags` is declared but the script does not exist yet).
 5. Move export rendering into a worker; add golden-frame and A/V sync tests.
 6. Project packages, people clusters, flipbooks, video scan stage.

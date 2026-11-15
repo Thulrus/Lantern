@@ -8,10 +8,12 @@
 // the threshold both sides have the same depth, so a seam through a continuous surface (a floor
 // the subject stands on) does not open up; only a real depth jump (the silhouette) separates the
 // layers, which is exactly where a single mesh would tear.
+import { inpaint } from "./inpaint";
 import type { Box } from "$lib/planner/types";
 
 export const SEP_MIN = 0.06;              // below this subject separation, one layer is better
 const COVER_MIN = 0.004, COVER_MAX = 0.72; // subject share of the frame outside which layering is pointless
+const DEPTH_PATCH_W = 255;               // depth (0–1) weighs like one colour channel in patch matching
 const HOLE_GROW = 0.008;                   // hole radius past the subject, share of the long edge (a wider ring showed more of the blurry fill)
 const FEATHER = 0.015;                     // grown-alpha feather past the hole, share of the long edge
 const SMOOTH_BG = 0.006, SMOOTH_FLAT = 0.015, SMOOTH_SUBJECT = 0.008; // Gaussian sigma for layer geometry, share of the long edge
@@ -200,7 +202,7 @@ export function otsu(d: Float32Array): { tau: number; near: number; far: number;
 /** Build the two layers for a photo. `px` is the photo at map size (RGBA), `u16` the normalised
  *  depth, `subject` the subject box in map pixels (null when nothing was found), `subjectMedian`
  *  and `bgMedian` the planner's inverse-depth medians inside and outside it. */
-export function buildLayers(px: Uint8ClampedArray, u16: Uint16Array, w: number, h: number, subject: Box | null, subjectMedian: number, bgMedian: number): Layers {
+export function buildLayers(px: Uint8ClampedArray, u16: Uint16Array, w: number, h: number, subject: Box | null, subjectMedian: number, bgMedian: number, avoid: Box[] = [], people: Uint8Array | null = null): Layers {
   const n = w * h, long = Math.max(w, h);
   const d = new Float32Array(n);
   for (let i = 0; i < n; i++) d[i] = u16[i] / 65535;
@@ -225,6 +227,7 @@ export function buildLayers(px: Uint8ClampedArray, u16: Uint16Array, w: number, 
     const a = t * t * (3 - 2 * t);
     tightF[i] = a; cover += a;
   }
+  if (people) { wholePeople(tightF, people, w, h); cover = 0; for (let i = 0; i < n; i++) cover += tightF[i]; }
   cover /= n;
   if (cover < COVER_MIN || cover > COVER_MAX) return flat();
 
@@ -246,12 +249,66 @@ export function buildLayers(px: Uint8ClampedArray, u16: Uint16Array, w: number, 
   const r = new Float32Array(n), g = new Float32Array(n), b = new Float32Array(n), bd = new Float32Array(n);
   for (let i = 0; i < n; i++) { r[i] = px[i * 4]; g[i] = px[i * 4 + 1]; b[i] = px[i * 4 + 2]; bd[i] = d[i]; }
   pullPush([r, g, b, bd], known, w, h);
+  // Refine the blurry rim fill with patches copied from the photo's own background (no faces).
+  const hole = new Uint8Array(n), ban = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { hole[i] = known[i] ? 0 : 1; bd[i] *= DEPTH_PATCH_W; }
+  for (const [x0, y0, x1, y1] of avoid) {
+    const m = 0.25 * Math.max(x1 - x0, y1 - y0);
+    for (let y = Math.max(0, Math.floor(y0 - m)); y < Math.min(h, Math.ceil(y1 + m)); y++)
+      for (let x = Math.max(0, Math.floor(x0 - m)); x < Math.min(w, Math.ceil(x1 + m)); x++) ban[y * w + x] = 1;
+  }
+  if (people) for (let i = 0; i < n; i++) if (people[i] >= 96) ban[i] = 1;   // never copy anyone's pixels into the background
+  inpaint([r, g, b, bd], hole, w, h, ban);
+  for (let i = 0; i < n; i++) bd[i] /= DEPTH_PATCH_W;
   for (let i = 0; i < n; i++) { plate[i * 4] = r[i]; plate[i * 4 + 1] = g[i]; plate[i * 4 + 2] = b[i]; }
   const bgDepth = toU16(gaussianBlur(bd, w, h, SMOOTH_BG * long));
   // Separation measured on the matte itself (subject median minus the rest).
   const sm = medianWhere(d, (i) => tightF[i] > 0.5), bm = medianWhere(d, (i) => tightF[i] < 0.5);
   const sep2 = Number.isFinite(sm) && Number.isFinite(bm) ? sm - bm : sep;
   return { tight, grown, plate, bgDepth, matte: { tau, floor, cover, sep: sep2, pivot: Number.isFinite(sm) ? sm : subjectMedian, box: largestBlob(tight, w, h) } };
+}
+
+/** Keep whole people on one layer (spec §1.2, §4.6). A depth threshold slices a person whose body
+ *  spans depths (seated, partly behind someone): each connected blob of the person mask (0–255,
+ *  map size) joins the subject when the matte already holds at least half of it, and leaves the
+ *  matte entirely (with a small margin) otherwise. Touching people form one blob and move together. */
+export function wholePeople(alpha: Float32Array, people: Uint8Array, w: number, h: number): void {
+  const n = w * h, label = new Int32Array(n).fill(-1), stack: number[] = [];
+  const minSize = 0.001 * n;
+  let next = 0;
+  for (let s0 = 0; s0 < n; s0++) {
+    if (people[s0] < 128 || label[s0] >= 0) continue;
+    const comp: number[] = [];
+    label[s0] = next; stack.push(s0);
+    while (stack.length) {
+      const i = stack.pop()!; comp.push(i);
+      const x = i % w;
+      for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w])
+        if (j >= 0 && j < n && label[j] < 0 && people[j] >= 128) { label[j] = next; stack.push(j); }
+    }
+    next++;
+    if (comp.length < minSize) continue;
+    let held = 0;
+    for (const i of comp) held += alpha[i];
+    if (held / comp.length >= 0.5) {
+      for (const i of comp) alpha[i] = Math.max(alpha[i], 1);
+      // The soft rim of the mask just outside the blob.
+      for (const i of comp) {
+        const x = i % w;
+        for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w])
+          if (j >= 0 && j < n && people[j] < 128) alpha[j] = Math.max(alpha[j], people[j] / 255);
+      }
+    } else {
+      const r = 2;
+      for (const i of comp) {
+        const x = i % w, y = (i / w) | 0;
+        for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+          const xx = x + dx, yy = y + dy;
+          if (xx >= 0 && yy >= 0 && xx < w && yy < h) alpha[yy * w + xx] = 0;
+        }
+      }
+    }
+  }
 }
 
 function toU16(f: Float32Array): Uint16Array {

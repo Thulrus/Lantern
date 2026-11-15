@@ -6,20 +6,24 @@ import { FACES_MODEL, FACES_VERSION, detectFaces, loadFaceDetector } from "./fac
 import { SALIENCY_VERSION } from "./saliency";
 import { DEPTH_EDGE_FULL, DEPTH_EDGE_LITE, DEPTH_MODEL, DEPTH_VERSION } from "./depth";
 import { subjectRegion } from "./depthmath";
+import { FILL_ATTEMPTS, FILL_MODEL, FILL_VERSION, faceLimit, inventedFace, inventedPerson } from "./fill";
+import { detectPersons, loadPersonDetector, loadSegmenter, segmentPeople, type PersonBox } from "./persons";
 import { quickTier } from "$lib/media/tier";
 import { decodePhoto } from "$lib/media/decode";
 import { analysisDb, mediaDb, originalsDb, type AnalysisRecord } from "$lib/store/db";
-import { getFile, putFile } from "$lib/store/opfs";
+import { deleteFile, getFile, putFile } from "$lib/store/opfs";
 import type { BasicsResult, DepthInfo, FaceResult, MediaAnalysis, SaliencyResult } from "$lib/planner/types";
 import AnalysisWorker from "../../workers/analysis.worker?worker";
 
-export type StageId = "basics" | "faces" | "depth";
+export type StageId = "basics" | "faces" | "depth" | "fill";
 const DEPTH_STALL_MS = 90_000;   // a hung session never returns; a slow phone inference should still fit
 class StallError extends Error {}
 export const STAGES: { id: StageId; version: number; model: string; requires: StageId[]; priority: number }[] = [
   { id: "basics", version: BASICS_VERSION * 100 + SALIENCY_VERSION, model: "classical", requires: [], priority: 0 },
   { id: "faces", version: FACES_VERSION, model: FACES_MODEL, requires: ["basics"], priority: 1 },
   { id: "depth", version: DEPTH_VERSION, model: DEPTH_MODEL, requires: ["basics", "faces"], priority: 2 },
+  // Generative plate fill; runs only while the project's generative fill covers plates (setFill).
+  { id: "fill", version: DEPTH_VERSION * 100 + FILL_VERSION, model: FILL_MODEL, requires: ["depth"], priority: 3 },
 ];
 
 export interface StageStatus { hash: string; stage: StageId; status: "queued" | "running" | "ok" | "error" | "skipped"; error?: string }
@@ -43,6 +47,8 @@ export class AnalysisQueue {
   /** Multi-threaded ONNX Runtime; turned off for the session after a job stalls (see `call`). */
   private ortThreads = true;
   modelProgress = 0;
+  /** Whether the generative fill stage runs (the project's generative fill reaches plates). */
+  private fillOn = false;
   /** Model input short edge for depth: smaller on the lite tier (spec §2.2). */
   private depthEdge = quickTier() === "lite" ? DEPTH_EDGE_LITE : DEPTH_EDGE_FULL;
   // Vite's dev server forces module workers, where MediaPipe's importScripts loader cannot run:
@@ -88,6 +94,7 @@ export class AnalysisQueue {
   enqueue(hashes: string[], boost = 0): void {
     for (const h of hashes)
       for (const st of STAGES) {
+        if (st.id === "fill" && !this.fillOn) continue;
         const key = `${h}|${st.id}`;
         if (this.running.has(key) || this.pending.some((p) => p.hash === h && p.stage === st.id)) continue;
         const d = this.done.get(key);
@@ -96,6 +103,13 @@ export class AnalysisQueue {
         this.emit({ hash: h, stage: st.id, status: "queued" });
       }
     this.pump();
+  }
+
+  /** Turn the generative fill stage on or off; turning it on queues it for `hashes`. */
+  setFill(on: boolean, hashes: string[]): void {
+    this.fillOn = on;
+    if (on) this.enqueue(hashes);
+    else { this.pending = this.pending.filter((p) => p.stage !== "fill"); }
   }
 
   /** Promote items near the playhead (spec §4.4). */
@@ -181,9 +195,11 @@ export class AnalysisQueue {
         const faces = (strong.length ? strong : weak).map((f) => f.box);
         const subject = subjectRegion(faces, (prior?.saliency?.peaks ?? []).map((x) => x.box), rec.info.w, rec.info.h);
         w.resident.add("depth");
+        // Person mask first (coarse, any device) so the matte keeps whole people; a failure only loses the refinement.
+        const people = await this.runSegment(w, () => decodePhoto(blob)).catch(() => null);
         const depthJob = async (threads: boolean) => {
           const bmp = await decodePhoto(blob);
-          return this.call<{ depth: Omit<DepthInfo, "available">; file: Blob; bgFile: Blob; matteFile: Blob | null; plateFile: Blob | null; ms: number; layersMs: number }>(w, { kind: "depth", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base, edge: this.depthEdge, subject, threads }, [bmp], (pr) => { this.modelProgress = pr; }, DEPTH_STALL_MS);
+          return this.call<{ depth: Omit<DepthInfo, "available">; file: Blob; bgFile: Blob; matteFile: Blob | null; plateFile: Blob | null; peopleFile: Blob | null; ms: number; layersMs: number }>(w, { kind: "depth", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base, edge: this.depthEdge, subject, faces: weak.map((f) => f.box), people: people ? { ...people, mask: people.mask.slice() } : null, threads }, [bmp], (pr) => { this.modelProgress = pr; }, DEPTH_STALL_MS);
         };
         let r: Awaited<ReturnType<typeof depthJob>>;
         try {
@@ -199,24 +215,42 @@ export class AnalysisQueue {
         await putFile(p.hash, "platedepth.u16.gz", r.bgFile);
         if (r.matteFile) await putFile(p.hash, "matte.u8.gz", r.matteFile);
         if (r.plateFile) await putFile(p.hash, "plate.webp", r.plateFile);
+        if (r.peopleFile) await putFile(p.hash, "people.u8.gz", r.peopleFile);
         result = { depth: r.depth, ms: r.ms, layersMs: r.layersMs };
+      } else if (st.id === "fill") {
+        const [blob, matte] = await Promise.all([getFile(p.hash, "analysis.webp").then((b) => b ?? getFile(p.hash, "proxy.webp")), getFile(p.hash, "matte.u8.gz")]);
+        if (!blob || !matte) { this.emit({ hash: p.hash, stage: p.stage, status: "skipped" }); return; }
+        // People on the original, in source pixels: kept out of the model's context, and the reference for the guard.
+        const people = (await this.runPersons(w, () => decodePhoto(blob), rec.info.w, rec.info.h)).persons;
+        w.resident.add("fill");
+        const peopleMask = await getFile(p.hash, "people.u8.gz");
+        let rejected: string | null = null, plateFile: Blob | null = null, rejectedFile: Blob | null = null, ms = 0, tries = 0;
+        for (let attempt = 0; attempt < FILL_ATTEMPTS.length; attempt++) {
+          tries++;
+          const bmp = await decodePhoto(blob);
+          const r = await this.call<{ plateFile: Blob | null; guard: ImageBitmap | null; generated: Uint8Array; w: number; h: number; ms: number }>(w, { kind: "fill", bitmap: bmp, matte, base: this.base, threads: this.ortThreads, people, peopleMask, srcW: rec.info.w, srcH: rec.info.h, attempt }, [bmp], (pr) => { this.modelProgress = pr; }, DEPTH_STALL_MS);
+          ms += r.ms;
+          if (!r.guard || !r.plateFile) { rejected = null; break; }
+          const g = r.guard, sx = r.w / rec.info.w, sy = r.h / rec.info.h;
+          const faces = (await this.runFaces(w, () => createImageBitmap(g), r.w, r.h)).faces;
+          const found = (await this.runPersons(w, () => createImageBitmap(g), r.w, r.h)).persons;
+          g.close();
+          const orig = people.map((q) => ({ box: [q.box[0] * sx, q.box[1] * sy, q.box[2] * sx, q.box[3] * sy] as [number, number, number, number] }));
+          const realSides = ((await loadAnalysis(p.hash))?.faces ?? []).map((f) => Math.max((f.box[2] - f.box[0]) * sx, (f.box[3] - f.box[1]) * sy));
+          rejected = inventedFace(faces, r.generated, r.w, r.h, faceLimit(realSides, r.w, r.h)) ? "face in generated pixels" : inventedPerson(found, orig, r.generated, r.w, r.h) ? "person in generated pixels" : null;
+          if (!rejected) { plateFile = r.plateFile; break; }
+          rejectedFile = r.plateFile;
+          console.info(`[fill] ${p.hash.slice(0, 8)} attempt ${attempt + 1} rejected: ${rejected}`, JSON.stringify(faces.filter((f) => f.score >= 0.5).map((f) => [f.box.map(Math.round), +f.score.toFixed(2)])));
+        }
+        if (plateFile) await putFile(p.hash, "plategen.webp", plateFile);
+        else await deleteFile(p.hash, "plategen.webp").catch(() => {});
+        if (rejectedFile) await putFile(p.hash, "plategen.rejected.webp", rejectedFile);   // the last rejected attempt, for inspection only
+        else await deleteFile(p.hash, "plategen.rejected.webp").catch(() => {});
+        result = { fill: { ok: !!plateFile, rejected: plateFile ? null : rejected, tries, ms } };
       } else {
         const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp"));
         if (!blob) throw new Error("no proxy to analyse");
-        const bmp = await decodePhoto(blob);
-        w.resident.add("faces");
-        if (this.mainThreadFaces) result = await this.facesOnMain(bmp, rec.info.w);
-        else {
-          try {
-            result = await this.call<{ faces: FaceResult[] }>(w, { kind: "faces", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base }, [bmp], (pr) => { this.modelProgress = pr; });
-          } catch (e) {
-            // Module workers (the dev server) cannot importScripts MediaPipe's glue: run on the main thread instead.
-            if (!/ModuleFactory|importScripts/.test(String(e))) throw e;
-            this.mainThreadFaces = true;
-            const again = await decodePhoto(blob);
-            result = await this.facesOnMain(again, rec.info.w);
-          }
-        }
+        result = await this.runFaces(w, () => decodePhoto(blob), rec.info.w, rec.info.h);
       }
       const row: AnalysisRecord = { key: analysisDb.key(p.hash, st.id, st.model, ""), hash: p.hash, stage: st.id, model: st.model, params: "", version: st.version, status: "ok", result, updated: Date.now() };
       await analysisDb.put(row);
@@ -246,6 +280,58 @@ export class AnalysisQueue {
     } finally {
       w.busy = false;
       this.pump();
+    }
+  }
+
+  /** Face detection on a worker, or on the main thread where workers cannot load MediaPipe (dev). */
+  private async runFaces(w: WorkerRec, bitmap: () => Promise<ImageBitmap>, srcW: number, srcH: number): Promise<{ faces: FaceResult[] }> {
+    w.resident.add("faces");
+    if (this.mainThreadFaces) return this.facesOnMain(await bitmap(), srcW);
+    try {
+      return await this.call<{ faces: FaceResult[] }>(w, { kind: "faces", bitmap: await bitmap(), srcW, srcH, base: this.base }, [], (pr) => { this.modelProgress = pr; });
+    } catch (e) {
+      // Module workers (the dev server) cannot importScripts MediaPipe's glue: run on the main thread instead.
+      if (!/ModuleFactory|importScripts/.test(String(e))) throw e;
+      this.mainThreadFaces = true;
+      return this.facesOnMain(await bitmap(), srcW);
+    }
+  }
+
+  /** Person mask (DeepLab), on a worker or (dev) on the main thread. */
+  private async runSegment(w: WorkerRec, bitmap: () => Promise<ImageBitmap>): Promise<{ mask: Uint8Array; w: number; h: number }> {
+    const onMain = async () => {
+      const seg = await loadSegmenter(this.base, (d, t) => { this.modelProgress = t ? d / t : 0; });
+      const b = await bitmap();
+      const r = segmentPeople(seg, b);
+      b.close();
+      return r;
+    };
+    if (this.mainThreadFaces) return onMain();
+    try {
+      return await this.call<{ mask: Uint8Array; w: number; h: number }>(w, { kind: "segment", bitmap: await bitmap(), base: this.base }, [], (pr) => { this.modelProgress = pr; });
+    } catch (e) {
+      if (!/ModuleFactory|importScripts/.test(String(e))) throw e;
+      this.mainThreadFaces = true;
+      return onMain();
+    }
+  }
+
+  /** Person boxes, on a worker or (dev) on the main thread, like faces. */
+  private async runPersons(w: WorkerRec, bitmap: () => Promise<ImageBitmap>, srcW: number, srcH: number): Promise<{ persons: PersonBox[] }> {
+    const onMain = async () => {
+      const det = await loadPersonDetector(this.base, (d, t) => { this.modelProgress = t ? d / t : 0; });
+      const b = await bitmap();
+      const persons = detectPersons(det, b, srcW / b.width);
+      b.close();
+      return { persons };
+    };
+    if (this.mainThreadFaces) return onMain();
+    try {
+      return await this.call<{ persons: PersonBox[] }>(w, { kind: "persons", bitmap: await bitmap(), srcW, srcH, base: this.base }, [], (pr) => { this.modelProgress = pr; });
+    } catch (e) {
+      if (!/ModuleFactory|importScripts/.test(String(e))) throw e;
+      this.mainThreadFaces = true;
+      return onMain();
     }
   }
 

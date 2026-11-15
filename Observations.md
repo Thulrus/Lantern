@@ -1,11 +1,2 @@
 Observations
-- Accents of beats are jumpy and annoying. They either need to be better integrated, or eliminated. Really, any jumpy motion should be identified and eliminated. Group sweep effects still frequently result in fast jumpy motion.
-- When modifying show or music settings, every modification flips back to the slide edit tab. It should stay on the tab being edited until the user changes tabs.
-- Maybe we should have some kind of tiered focal point system where faces get priority, then, if there are no faces, we put the focal point on an area of high contrast or something like that so that we are trying to do pans and zooms and stuff relative to an actual subject, even when there are no faces.
-- Some transitions apply a mask to the previous image, which shows up as a jump of cropping or something on the previous image, and then a slow transition to the new image.
-- The bottom storyboard and timeline are laid out horizontally, but a scroll wheel on them only moves vertically. Scroll on those should move them horizontally.
-- I thought we had generative fill behind things that were pulled out of images, but that is not working. THere are pretty obvious ghost cutouts behind people when we do 3D moves around them.
-- We may need a better way to manage music. A user may want to try out different songs, so they may want to load in several files, use some and not others, arrange them in a more intuitive way than currently. We may also want to inform them when their song is too short for the number of images, or vice versa.
-- "Edit framing" makes a stretched out box for the image, rather than a box with the right aspect ratio, and it's hard to use.
-- Maybe better management of title cards and chapter cards? Right now, you can add beginning and end titles in the show tab, but if you delete one, there is no way to get it back. There doesn't seem to ba any way of adding chapter cards manually. Maybe just an "Add title card" button instead of the thing in the show settings. Then you can add and remove cards as desired.
 - 

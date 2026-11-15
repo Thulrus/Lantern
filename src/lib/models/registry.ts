@@ -38,6 +38,27 @@ export const MODELS: ModelSpec[] = [
     note: "Relative depth for 3D moves. Base and Large are CC-BY-NC and must not be used.",
   },
   {
+    id: "mp-efficientdet-lite0", task: "persons", name: "MediaPipe Object Detector (EfficientDet-Lite0)",
+    url: `${GCS}/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite`,
+    bytes: 7254339, sha256: "4b59100025bea1235a84c1038879a6cccc9f6c49f5e41144e91e74d99e780993",
+    license: "Apache-2.0", source: "https://developers.google.com/mediapipe/solutions/vision/object_detector", tier: "all",
+    note: "Person boxes for the generative fill's person guard.",
+  },
+  {
+    id: "mp-deeplab-v3", task: "segmentation", name: "MediaPipe Image Segmenter (DeepLab v3)",
+    url: `${GCS}/image_segmenter/deeplab_v3/float32/1/deeplab_v3.tflite`,
+    bytes: 2780176, sha256: "ff36e24d40547fe9e645e2f4e8745d1876d6e38b332d39a82f0bf0f5d1d561b3",
+    license: "Apache-2.0", source: "https://developers.google.com/mediapipe/solutions/vision/image_segmenter", tier: "all",
+    note: "Coarse person mask so depth mattes keep whole people.",
+  },
+  {
+    id: "lama-512", task: "inpaint", name: "LaMa big (ONNX fp32, 512 × 512)",
+    url: "https://huggingface.co/Carve/LaMa-ONNX/resolve/c3c0c9e468934d62e79c329e35d82dd09ff8c444/lama_fp32.onnx",
+    bytes: 208044816, sha256: "1faef5301d78db7dda502fe59966957ec4b79dd64e16f03ed96913c7a4eb68d6",
+    license: "Apache-2.0", source: "https://huggingface.co/Carve/LaMa-ONNX", tier: "all",
+    note: "Generative background fill behind people (opt-in). MI-GAN (MIT) was tried and rejected: figure-like blobs in person-sized holes. An 8-bit export would be ~4× smaller but needs a host.",
+  },
+  {
     id: "clip-vit-b32-vision", task: "embedding", name: "CLIP ViT-B/32 image tower (ONNX, quantized)",
     url: "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/vision_model_quantized.onnx",
     bytes: 0, sha256: null,
