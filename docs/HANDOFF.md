@@ -1,11 +1,40 @@
 # Lantern: development status and handoff
 
-Status as of 2026-11-15 (eighth session: depth-wipe crop bug, `.lantern` project files, Apache-2.0, music end fade; see Sessions 8 and 8b).
+Status as of 2026-11-15 (ninth session: framing editor rebuilt and framing edits honoured; see Session 9. Before that: depth-wipe crop bug, `.lantern` project files, Apache-2.0, music end fade; Sessions 8 and 8b).
 Earlier summary (sixth session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed, and Depth Space (M5) mostly built: depth, derived mattes and plates, two-layer meshes, depth wipe and fly-through.** Import
 photos and songs, get an automatically planned 2D show with beat-synced cuts, edit it in the
 editor, export an MP4. All of it was exercised end to end in headless Chromium by the Playwright
 test (`tests/e2e/show.spec.ts`) against the owner's local `example_photos/` folder. The owner
 has committed ("Basics working") and deployed to GitHub Pages.
+
+## Session 9 (2026-11-15): framing editor
+
+Owner: framing boxes could run off the editor's edge, one box hid the other's resize handle, and
+the show ignored framing edits ("moves the camera randomly"). Causes found and fixed (53 unit tests,
+check clean; e2e `framing` (new), `transitions`, `package`, `show` pass):
+
+- **Pull-outs were cancelled**: `compile.ts` set a layer's `cover` axis when *any* key covered it,
+  so the renderer's `fitView` clamped a pull-out to the whole photo back to a covering crop (asked
+  1.0, got 0.746). Now an axis is clamped only when *every* key covers it. Planner moves are
+  unaffected (`secure`/`inside` makes all keys cover when one does).
+- **Hidden keys**: the editor showed only the first and last key. Tours kept their middle stops and
+  sweeps their dwell keys (a copy of the start view), so the camera flew to the old framing
+  mid-slide. The editor now shows every frame (`planner/framing.ts` `frameGroups`: runs of equal
+  views move together, the last key is always its own End), with **Remove stops** to straighten.
+- **Pairs ignored framing**: `pairTreatment` rebuilt both halves. `Treatment.cells` now holds each
+  photo's keys when edited (Left / Right photo in the editor); locked treatments carry it through re-plans.
+- **Undo**: the drag mutated the project before the undo snapshot. Drags now use a local draft and
+  commit once on release via `app.setFraming` (one undo step, locks the motion). `app.resetFraming`
+  lays the move out again (pairs: drops `cells`, unlocks).
+- **Editor UI** (`Framing.svelte`): the stage is the whole-photo frame (photo centred, bars shown)
+  inside a padded box, so no allowed frame or handle is off the edge; frames are limited to the
+  whole photo (`fitFrame`). Hit-testing is in script: corners before bodies, the selected frame
+  first, then the smallest, so overlapping frames stay reachable; chips (Start / Stop n / End)
+  select any frame. Four corner handles, resizing about the opposite corner (`resizeFrom`). A dashed
+  path joins the frames. Selecting or dragging a frame seeks the preview to that moment (clamped
+  to where the slide is alone on screen). Keyboard: arrows move, +/- zoom (Shift = bigger steps).
+- Depth moves: boxes show the framing at the subject's depth; the 3D camera move still applies,
+  so the edge clamp may shift a frame pressed against the photo edge slightly. Not changed.
 
 ## Session 8b (2026-11-15): license, music end fade
 

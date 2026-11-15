@@ -6,7 +6,7 @@ import { AnalysisQueue, loadAnalysis, type Activity, type StageId, type StageSta
 import { compile } from "$lib/planner/compile";
 import { plan, relayout, type PlanResult } from "$lib/planner/plan";
 import { resolveStyle } from "$lib/planner/styles";
-import type { Aspect, Fps, LockField, MediaAnalysis, MusicAnalysis, OutHeight, Project, Slide, Timeline, TreatmentId } from "$lib/planner/types";
+import type { Aspect, CamKey, Fps, LockField, MediaAnalysis, MusicAnalysis, OutHeight, Project, Slide, Timeline, TreatmentId } from "$lib/planner/types";
 import { uid } from "$lib/util/id";
 import { analysisDb, mediaDb, projectsDb, songsDb, type MediaRecord, type SongRecord } from "./db";
 
@@ -316,6 +316,23 @@ class AppState {
     if (!m || !this.project) return;
     const t = relayout(this.project, slide, m, id, amount, direction);
     this.edit((p) => { const s = p.slides.find((x) => x.id === slide.id); if (s) s.treatment = t; }, { slideId: slide.id, fields: ["treatment"] });
+  }
+
+  /** Framing editor: replace a slide's camera keys (or, for a pair, both photos' keys) and lock its motion. */
+  setFraming(slideId: string, patch: { keys?: CamKey[]; cells?: [CamKey[], CamKey[]] }): void {
+    this.edit((p) => {
+      const s = p.slides.find((x) => x.id === slideId);
+      if (!s) return;
+      if (patch.keys) s.treatment.keys = patch.keys;
+      if (patch.cells) s.treatment.cells = patch.cells;
+    }, { slideId, fields: ["treatment"] });
+  }
+
+  /** Framing editor's reset: lay the slide's move out again automatically. */
+  resetFraming(slide: Slide): void {
+    if (slide.kind === "pair") {
+      this.edit((p) => { const s = p.slides.find((x) => x.id === slide.id); if (s) { delete s.treatment.cells; delete s.locks.treatment; } });
+    } else this.setTreatment(slide, slide.treatment.id);
   }
 
   tryAnother(slide: Slide): void {

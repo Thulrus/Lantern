@@ -63,7 +63,7 @@
             <button class="small" onclick={() => (framing = !framing)}>{framing ? "Done framing" : "Edit framing"}</button>
           </div>
         </div>
-        {#if framing && media}<Framing {slide} {media} />{/if}
+        {#if framing && media}<Framing {slide} />{/if}
         <Seg label="Fill" options={fills} value={slide.fill} onchange={(v) => set((s) => (s.fill = v), ["fill"])} />
       {/if}
       <div class="field">

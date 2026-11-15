@@ -40,6 +40,7 @@ export interface Treatment {
   k?: number;                     // look-at blend (0 plain move, 1 orbit)
   pivot?: number;                 // pivot inverse depth
   stops?: Box[];                  // tour stops (source pixels)
+  cells?: [CamKey[], CamKey[]];   // pair slides: each photo's own keys, set by the framing editor (else compile makes a gentle push)
 }
 
 export interface Caption {

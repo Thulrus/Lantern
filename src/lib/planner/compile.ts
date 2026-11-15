@@ -82,13 +82,19 @@ function renderSlide(s: Slide, analysis: Map<string, MediaAnalysis>, aspect: num
   const bb = bounds(base.keys, base.k ?? 0, base.aim ?? [0, 0], base.pivot ?? 0.5, bd);
   base.bounds = bb;
   if (m.depth) base.edge = bd.bg;
-  base.cover = [base.keys.some((k) => k.view[2] * aspect <= ia * 1.1), base.keys.some((k) => k.view[2] <= 1.1)];
+  // An axis is clamped to the photo's edge only when every key covers it. The planner's moves
+  // either cover throughout or not at all (motion.ts `inside`), but a framing edit may pull out
+  // from a covering crop to the whole photo; clamping that axis would cancel the pull-out.
+  base.cover = [base.keys.every((k) => k.view[2] * aspect <= ia * 1.1), base.keys.every((k) => k.view[2] <= 1.1)];
   return base;
 }
 
-/** Each half of a pair gets its own gentle move, offset in phase (spec §5.3). */
-function pairTreatment(s: Slide, i: number, m: MediaAnalysis | undefined, cellAspect: number): Slide["treatment"] {
+/** Each half of a pair gets its own gentle move, offset in phase (spec §5.3), unless the framing
+ *  editor gave that photo its own keys. */
+export function pairTreatment(s: Slide, i: number, m: MediaAnalysis | undefined, cellAspect: number): Slide["treatment"] {
   if (!m) return s.treatment;
+  const own = s.treatment.cells?.[i];
+  if (own?.length) return { id: "push", amount: s.treatment.amount, keys: own, k: 0, pivot: 0.5 };
   const ia = m.info.w / m.info.h;
   const cover = Math.min(1, ia / cellAspect);
   const vs0 = cover * 0.98, vs1 = cover * 0.9;
