@@ -20,6 +20,9 @@ export type Job =
   | { id: number; kind: "fill"; bitmap: ImageBitmap; matte: Blob; base: string; threads: boolean; people: { box: Box; score: number }[]; peopleMask: Blob | null; srcW: number; srcH: number; attempt: number }
   | { id: number; kind: "unload" };
 
+/** Tell the queue the job's model is loaded and the work itself starts (for the progress panel). */
+const ready = (id: number) => self.postMessage({ id, ready: true });
+
 self.onmessage = async (e: MessageEvent<Job>) => {
   const job = e.data;
   try {
@@ -45,6 +48,7 @@ self.onmessage = async (e: MessageEvent<Job>) => {
     }
     if (job.kind === "faces") {
       const det = await loadFaceDetector(job.base, (done, total) => self.postMessage({ id: job.id, progress: total ? done / total : 0 }));
+      ready(job.id);
       const scale = job.srcW / job.bitmap.width;
       const faces = await detectFaces(det, job.bitmap, scale);
       job.bitmap.close();
@@ -53,6 +57,7 @@ self.onmessage = async (e: MessageEvent<Job>) => {
     }
     if (job.kind === "depth") {
       const s = await loadDepth(job.base, job.threads, (done, total) => self.postMessage({ id: job.id, progress: total ? done / total : 0 }));
+      ready(job.id);
       const t0 = performance.now();
       const { raw, w, h, px } = await estimateDepth(s, job.bitmap, job.edge);
       job.bitmap.close();
@@ -81,6 +86,7 @@ self.onmessage = async (e: MessageEvent<Job>) => {
     }
     if (job.kind === "segment") {
       const seg = await loadSegmenter(job.base, (done, total) => self.postMessage({ id: job.id, progress: total ? done / total : 0 }));
+      ready(job.id);
       const r = segmentPeople(seg, job.bitmap);
       job.bitmap.close();
       self.postMessage({ id: job.id, result: r }, { transfer: [r.mask.buffer] });
@@ -88,6 +94,7 @@ self.onmessage = async (e: MessageEvent<Job>) => {
     }
     if (job.kind === "persons") {
       const det = await loadPersonDetector(job.base, (done, total) => self.postMessage({ id: job.id, progress: total ? done / total : 0 }));
+      ready(job.id);
       const persons = detectPersons(det, job.bitmap, job.srcW / job.bitmap.width);
       job.bitmap.close();
       self.postMessage({ id: job.id, result: { persons } });
@@ -95,6 +102,7 @@ self.onmessage = async (e: MessageEvent<Job>) => {
     }
     if (job.kind === "fill") {
       const s = await loadFill(job.base, job.threads, (done, total) => self.postMessage({ id: job.id, progress: total ? done / total : 0 }));
+      ready(job.id);
       const m = await decodePlanes(job.matte), w = m.w, h = m.h;
       const c = new OffscreenCanvas(w, h), g = c.getContext("2d")!;
       g.drawImage(job.bitmap, 0, 0, w, h);

@@ -32,7 +32,11 @@
   }
   // The board scrolls sideways: map a vertical wheel to horizontal scroll.
   function hwheel(e: WheelEvent) { const el = e.currentTarget as HTMLElement; if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { el.scrollLeft += e.deltaY; e.preventDefault(); } }
-  const dot = (hash: string, stage: string) => { const st = app.stageStatus.get(`${hash}|${stage}`); return st === "ok" || st === "skipped" ? "ok" : st === "error" ? "err" : st ? "run" : ""; };
+  const dot = (hash: string, stage: string) => { const st = app.stageStatus.get(`${hash}|${stage}`); return st === "ok" || st === "skipped" ? "ok" : st === "error" ? "err" : st === "running" ? "run" : st ? "wait" : ""; };
+  const STAGE_NAME: Record<string, string> = { basics: "Photo read", faces: "Faces", depth: "Depth (3D)", fill: "Fill behind people" };
+  const STATE_NAME: Record<string, string> = { ok: "done", err: "failed", run: "working now", wait: "waiting", "": "not started" };
+  const tip = (hash: string, stage: string) => `${STAGE_NAME[stage]}: ${STATE_NAME[dot(hash, stage)]}`;
+  const stagesShown = $derived(app.project?.generativeFill === "all" ? ["basics", "faces", "depth", "fill"] : ["basics", "faces", "depth"]);
 </script>
 
 <div class="board" role="list" onwheel={hwheel}>
@@ -50,7 +54,7 @@
       </div>
       <div class="meta">
         <span>{s.dur.toFixed(1)} s</span>
-        {#if s.kind !== "title"}<span class="dots"><i class={dot(s.items[0], "basics")} title="basics"></i><i class={dot(s.items[0], "faces")} title="faces"></i><i class={dot(s.items[0], "depth")} title="depth"></i></span>{/if}
+        {#if s.kind !== "title"}<span class="dots">{#each stagesShown as st (st)}<i class={dot(s.items[0], st)} title={tip(s.items[0], st)}></i>{/each}</span>{/if}
       </div>
     </div>
   {/each}
@@ -71,5 +75,6 @@
   .meta { display: flex; justify-content: space-between; align-items: center; padding: 3px 6px; font-size: 11px; color: var(--dim); }
   .dots { display: flex; gap: 3px; }
   .dots i { width: 6px; height: 6px; border-radius: 50%; background: #333; display: inline-block; }
-  .dots i.ok { background: var(--ok); } .dots i.run { background: var(--accent); } .dots i.err { background: var(--danger); }
+  .dots i.ok { background: var(--ok); } .dots i.run { background: var(--accent); animation: pulse 1s ease-in-out infinite alternate; } .dots i.wait { background: #5a5030; }
+  @keyframes pulse { from { opacity: .4; } to { opacity: 1; } } .dots i.err { background: var(--danger); }
 </style>

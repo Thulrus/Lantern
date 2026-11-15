@@ -40,6 +40,9 @@ test("import, make, preview and export", async ({ page }) => {
   await input.setInputFiles([...photos, song]);
   await page.waitForURL(/#\/make\//, { timeout: 120_000 });
   await expect(page.getByText("Make my show")).toBeVisible();
+  // The analysis panel says what is running and what is still to come.
+  await expect(page.locator(".panel").getByText(/Reading photos/)).toBeVisible();
+  await expect(page.locator(".panel").getByText(/Filling behind people/)).toBeVisible();
   // Wait for the song analysis to show a tempo.
   await expect(page.getByText(/BPM/)).toBeVisible({ timeout: 60_000 });
   // Cinematic allows 3D treatments (Classic, the default, is 2D only).
@@ -51,9 +54,16 @@ test("import, make, preview and export", async ({ page }) => {
   const n = await cards.count();
   expect(n).toBeGreaterThan(0);
   // Wait for faces (model download in the worker) or time out gracefully.
-  await page.waitForFunction(() => /items analysed/.test(document.body.innerText), null, { timeout: 90_000 }).catch(() => logs.push("faces did not finish in time"));
+  type Pipe = { stages: { id: string; done: number; errors: number; total: number }[] };
+  const stageDone = (id: string) => page.waitForFunction((id) => {
+    const s = ((globalThis as unknown as { lantern: { pipeline(): Pipe } }).lantern.pipeline()).stages.find((x) => x.id === id)!;
+    return s.total > 0 && s.done + s.errors >= s.total;
+  }, id, { timeout: id === "depth" ? 300_000 : 90_000 });
+  await expect(page.locator(".pill")).toBeVisible();
+  await stageDone("faces").catch(() => logs.push("faces did not finish in time"));
   // Depth (model download + one inference per photo in the worker).
-  await page.waitForFunction(() => /depth done/.test(document.body.innerText), null, { timeout: 300_000 }).catch(() => logs.push("depth did not finish in time"));
+  await stageDone("depth").catch(() => logs.push("depth did not finish in time"));
+  await expect(page.locator(".pill")).toHaveText(/Analysis done/, { timeout: 10_000 });
   const diag = await page.evaluate(async () => {
     const req = indexedDB.open("lantern");
     const db = await new Promise<IDBDatabase>((res, rej) => { req.onsuccess = () => res(req.result); req.onerror = () => rej(req.error); });

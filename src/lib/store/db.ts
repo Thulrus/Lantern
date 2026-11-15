@@ -61,6 +61,11 @@ export const analysisDb = {
   async forHash(hash: string): Promise<AnalysisRecord[]> { return (await db()).getAllFromIndex("analysis", "hash", hash); },
   async put(r: AnalysisRecord): Promise<void> { await (await db()).put("analysis", r); },
   async clear(): Promise<void> { await (await db()).clear("analysis"); },
+  /** Remove the records of some stages (any model, any params) for these items. */
+  async removeStages(hashes: string[], stages: string[]): Promise<void> {
+    const d = await db();
+    for (const h of hashes) for (const r of await d.getAllFromIndex("analysis", "hash", h)) if (stages.includes(r.stage)) await d.delete("analysis", r.key);
+  },
   async removeForHash(hash: string): Promise<void> {
     const d = await db();
     for (const r of await d.getAllFromIndex("analysis", "hash", hash)) await d.delete("analysis", r.key);

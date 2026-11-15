@@ -7,7 +7,7 @@ import { SALIENCY_VERSION } from "./saliency";
 import { DEPTH_EDGE_FULL, DEPTH_EDGE_LITE, DEPTH_MODEL, DEPTH_VERSION } from "./depth";
 import { subjectRegion } from "./depthmath";
 import { FILL_ATTEMPTS, FILL_MODEL, FILL_VERSION, faceLimit, inventedFace, inventedPerson } from "./fill";
-import { detectPersons, loadPersonDetector, loadSegmenter, segmentPeople, type PersonBox } from "./persons";
+import { PERSONS_MODEL, SEGMENT_MODEL, detectPersons, loadPersonDetector, loadSegmenter, segmentPeople, type PersonBox } from "./persons";
 import { quickTier } from "$lib/media/tier";
 import { decodePhoto } from "$lib/media/decode";
 import { analysisDb, mediaDb, originalsDb, type AnalysisRecord } from "$lib/store/db";
@@ -16,6 +16,10 @@ import type { BasicsResult, DepthInfo, FaceResult, MediaAnalysis, SaliencyResult
 import AnalysisWorker from "../../workers/analysis.worker?worker";
 
 export type StageId = "basics" | "faces" | "depth" | "fill";
+/** Model stages a worker can hold resident: the four stages plus the helper models they load. */
+type ResidentId = StageId | "segment" | "persons";
+/** Progress value a worker sends (as `{ ready: true }`) once a job's model is loaded and work begins. */
+const READY = -1;
 const DEPTH_STALL_MS = 90_000;   // a hung session never returns; a slow phone inference should still fit
 class StallError extends Error {}
 export const STAGES: { id: StageId; version: number; model: string; requires: StageId[]; priority: number }[] = [
@@ -29,15 +33,27 @@ export const STAGES: { id: StageId; version: number; model: string; requires: St
 export interface StageStatus { hash: string; stage: StageId; status: "queued" | "running" | "ok" | "error" | "skipped"; error?: string }
 type Listener = (s: StageStatus) => void;
 
+/** What one worker is doing right now, for the analysis panel: downloading a model (with the
+ *  share done), loading one into memory (first use on that worker), or working on a photo. */
+export interface Activity {
+  stage: StageId; hash: string; step: string;
+  phase: "download" | "load" | "work";
+  model?: string; done?: number;
+}
+
 interface Pending { hash: string; stage: StageId; priority: number; seq: number }
 /** `resident`: the model stages this worker has loaded, so jobs prefer a worker that already holds their model. */
-type WorkerRec = { w: Worker; busy: boolean; resident: Set<StageId> };
+type WorkerRec = { w: Worker; busy: boolean; resident: Set<ResidentId> };
 
 export class AnalysisQueue {
   private workers: WorkerRec[] = [];
   private pending: Pending[] = [];
   private seq = 0;
   private listeners = new Set<Listener>();
+  private activityListeners = new Set<(a: Activity[]) => void>();
+  private act = new Map<WorkerRec, Activity>();
+  /** Recent wall times (ms) of jobs that did real work, per stage, for time estimates. */
+  private times = new Map<StageId, number[]>();
   private running = new Set<string>();
   private done = new Map<string, StageStatus>();
   private jobId = 0;
@@ -66,10 +82,11 @@ export class AnalysisQueue {
   private spawn(): WorkerRec {
     const w = new AnalysisWorker();
     const rec: WorkerRec = { w, busy: false, resident: new Set() };
-    w.onmessage = (e: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: number }>) => {
+    w.onmessage = (e: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: number; ready?: boolean }>) => {
       const p = this.waiting.get(e.data.id);
       if (!p) return;
       p.touch();
+      if (e.data.ready) { p.progress?.(READY); return; }
       if (e.data.progress !== undefined) { p.progress?.(e.data.progress); return; }
       this.waiting.delete(e.data.id);
       if (e.data.error !== undefined) p.reject(new Error(e.data.error)); else p.resolve(e.data.result);
@@ -87,6 +104,46 @@ export class AnalysisQueue {
   }
 
   onStatus(l: Listener): () => void { this.listeners.add(l); return () => this.listeners.delete(l); }
+  onActivity(l: (a: Activity[]) => void): () => void { this.activityListeners.add(l); return () => this.activityListeners.delete(l); }
+  get activities(): Activity[] { return [...this.act.values()]; }
+  get workerCount(): number { return this.workers.length; }
+  /** Median wall time of a stage's recent jobs, in ms (null before any sample). */
+  stageMs(stage: StageId): number | null {
+    const t = this.times.get(stage);
+    if (!t?.length) return null;
+    const s = [...t].sort((a, b) => a - b);
+    return s[s.length >> 1];
+  }
+  private setAct(w: WorkerRec, a: Activity | null): void {
+    if (a) this.act.set(w, a); else this.act.delete(w);
+    const all = this.activities;
+    for (const l of this.activityListeners) l(all);
+  }
+  /** Mark the start of a step of a job: "load" when the step's model is not yet in this worker. */
+  private step(w: WorkerRec, p: Pending, step: string, model?: string, resident?: ResidentId): void {
+    const fresh = !!model && !!resident && !w.resident.has(resident);
+    this.setAct(w, { stage: p.stage, hash: p.hash, step, phase: fresh ? "load" : "work", model });
+    if (resident) w.resident.add(resident);
+  }
+  /** Progress callback for a worker call: download shares, then READY once the model is loaded. */
+  private prog(w: WorkerRec): (pr: number) => void {
+    return (pr) => {
+      this.modelProgress = pr;
+      const a = this.act.get(w);
+      if (!a) return;
+      if (pr === READY) this.setAct(w, { ...a, phase: "work", done: undefined });
+      else this.setAct(w, { ...a, phase: pr < 1 ? "download" : "load", done: pr });
+    };
+  }
+
+  /** Forget results for these stages so the next `enqueue` runs them again (the cached records
+   *  must be removed too, or the job finds them and stops at once). */
+  forget(hashes: string[], stages: StageId[]): void {
+    const hs = new Set(hashes), ss = new Set(stages);
+    this.pending = this.pending.filter((p) => !(hs.has(p.hash) && ss.has(p.stage)));
+    for (const h of hashes) for (const st of stages) this.done.delete(`${h}|${st}`);
+  }
+  forgetAll(): void { this.pending = []; this.done.clear(); }
   private emit(s: StageStatus) { this.done.set(`${s.hash}|${s.stage}`, s); for (const l of this.listeners) l(s); }
   status(hash: string, stage: StageId): StageStatus | undefined { return this.done.get(`${hash}|${stage}`); }
 
@@ -175,6 +232,7 @@ export class AnalysisQueue {
     this.running.add(key);
     this.emit({ hash: p.hash, stage: p.stage, status: "running" });
     const st = STAGES.find((s) => s.id === p.stage)!;
+    const t0 = performance.now();
     try {
       const cached = await analysisDb.get(p.hash, st.id, st.model, "");
       if (cached && cached.version === st.version && cached.status === "ok") { this.emit({ hash: p.hash, stage: p.stage, status: "ok" }); return; }
@@ -185,6 +243,7 @@ export class AnalysisQueue {
       if (st.id === "basics") {
         const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp")) ?? (await originalsDb.get(p.hash));
         if (!blob) throw new Error("no image data to analyse");
+        this.step(w, p, "Reading the photo");
         const bmp = await decodePhoto(blob);
         result = await this.call<{ basics: BasicsResult; saliency: SaliencyResult }>(w, { kind: "basics", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, outHeight: 1080, name: rec.info.name, makeProxies: false }, [bmp]);
       } else if (st.id === "depth") {
@@ -194,12 +253,13 @@ export class AnalysisQueue {
         const strong = (prior?.faces ?? []).filter((f) => f.score >= 0.5), weak = (prior?.faces ?? []).filter((f) => f.score >= 0.4);
         const faces = (strong.length ? strong : weak).map((f) => f.box);
         const subject = subjectRegion(faces, (prior?.saliency?.peaks ?? []).map((x) => x.box), rec.info.w, rec.info.h);
-        w.resident.add("depth");
         // Person mask first (coarse, any device) so the matte keeps whole people; a failure only loses the refinement.
+        this.step(w, p, "Outlining people", SEGMENT_MODEL, "segment");
         const people = await this.runSegment(w, () => decodePhoto(blob)).catch(() => null);
         const depthJob = async (threads: boolean) => {
+          this.step(w, p, "Measuring depth", DEPTH_MODEL, "depth");
           const bmp = await decodePhoto(blob);
-          return this.call<{ depth: Omit<DepthInfo, "available">; file: Blob; bgFile: Blob; matteFile: Blob | null; plateFile: Blob | null; peopleFile: Blob | null; ms: number; layersMs: number }>(w, { kind: "depth", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base, edge: this.depthEdge, subject, faces: weak.map((f) => f.box), people: people ? { ...people, mask: people.mask.slice() } : null, threads }, [bmp], (pr) => { this.modelProgress = pr; }, DEPTH_STALL_MS);
+          return this.call<{ depth: Omit<DepthInfo, "available">; file: Blob; bgFile: Blob; matteFile: Blob | null; plateFile: Blob | null; peopleFile: Blob | null; ms: number; layersMs: number }>(w, { kind: "depth", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base, edge: this.depthEdge, subject, faces: weak.map((f) => f.box), people: people ? { ...people, mask: people.mask.slice() } : null, threads }, [bmp], this.prog(w), DEPTH_STALL_MS);
         };
         let r: Awaited<ReturnType<typeof depthJob>>;
         try {
@@ -221,17 +281,19 @@ export class AnalysisQueue {
         const [blob, matte] = await Promise.all([getFile(p.hash, "analysis.webp").then((b) => b ?? getFile(p.hash, "proxy.webp")), getFile(p.hash, "matte.u8.gz")]);
         if (!blob || !matte) { this.emit({ hash: p.hash, stage: p.stage, status: "skipped" }); return; }
         // People on the original, in source pixels: kept out of the model's context, and the reference for the guard.
+        this.step(w, p, "Finding people", PERSONS_MODEL, "persons");
         const people = (await this.runPersons(w, () => decodePhoto(blob), rec.info.w, rec.info.h)).persons;
-        w.resident.add("fill");
         const peopleMask = await getFile(p.hash, "people.u8.gz");
         let rejected: string | null = null, plateFile: Blob | null = null, rejectedFile: Blob | null = null, ms = 0, tries = 0;
         for (let attempt = 0; attempt < FILL_ATTEMPTS.length; attempt++) {
           tries++;
+          this.step(w, p, attempt ? `Filling the background again (try ${attempt + 1} of ${FILL_ATTEMPTS.length})` : "Filling the background", FILL_MODEL, "fill");
           const bmp = await decodePhoto(blob);
-          const r = await this.call<{ plateFile: Blob | null; guard: ImageBitmap | null; generated: Uint8Array; w: number; h: number; ms: number }>(w, { kind: "fill", bitmap: bmp, matte, base: this.base, threads: this.ortThreads, people, peopleMask, srcW: rec.info.w, srcH: rec.info.h, attempt }, [bmp], (pr) => { this.modelProgress = pr; }, DEPTH_STALL_MS);
+          const r = await this.call<{ plateFile: Blob | null; guard: ImageBitmap | null; generated: Uint8Array; w: number; h: number; ms: number }>(w, { kind: "fill", bitmap: bmp, matte, base: this.base, threads: this.ortThreads, people, peopleMask, srcW: rec.info.w, srcH: rec.info.h, attempt }, [bmp], this.prog(w), DEPTH_STALL_MS);
           ms += r.ms;
           if (!r.guard || !r.plateFile) { rejected = null; break; }
           const g = r.guard, sx = r.w / rec.info.w, sy = r.h / rec.info.h;
+          this.step(w, p, "Checking the fill for invented people", FACES_MODEL, "faces");
           const faces = (await this.runFaces(w, () => createImageBitmap(g), r.w, r.h)).faces;
           const found = (await this.runPersons(w, () => createImageBitmap(g), r.w, r.h)).persons;
           g.close();
@@ -250,10 +312,15 @@ export class AnalysisQueue {
       } else {
         const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp"));
         if (!blob) throw new Error("no proxy to analyse");
+        this.step(w, p, "Looking for faces", FACES_MODEL, "faces");
         result = await this.runFaces(w, () => decodePhoto(blob), rec.info.w, rec.info.h);
       }
       const row: AnalysisRecord = { key: analysisDb.key(p.hash, st.id, st.model, ""), hash: p.hash, stage: st.id, model: st.model, params: "", version: st.version, status: "ok", result, updated: Date.now() };
       await analysisDb.put(row);
+      const t = this.times.get(st.id) ?? [];
+      t.push(performance.now() - t0);
+      if (t.length > 20) t.shift();
+      this.times.set(st.id, t);
       this.emit({ hash: p.hash, stage: p.stage, status: "ok" });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -261,6 +328,7 @@ export class AnalysisQueue {
       this.emit({ hash: p.hash, stage: p.stage, status: "error", error: msg });
     } finally {
       this.running.delete(key);
+      if (this.act.get(w)?.hash === p.hash) this.setAct(w, null);
     }
   }
 
@@ -285,22 +353,23 @@ export class AnalysisQueue {
 
   /** Face detection on a worker, or on the main thread where workers cannot load MediaPipe (dev). */
   private async runFaces(w: WorkerRec, bitmap: () => Promise<ImageBitmap>, srcW: number, srcH: number): Promise<{ faces: FaceResult[] }> {
-    w.resident.add("faces");
-    if (this.mainThreadFaces) return this.facesOnMain(await bitmap(), srcW);
+    if (this.mainThreadFaces) return this.facesOnMain(await bitmap(), srcW, this.prog(w));
     try {
-      return await this.call<{ faces: FaceResult[] }>(w, { kind: "faces", bitmap: await bitmap(), srcW, srcH, base: this.base }, [], (pr) => { this.modelProgress = pr; });
+      return await this.call<{ faces: FaceResult[] }>(w, { kind: "faces", bitmap: await bitmap(), srcW, srcH, base: this.base }, [], this.prog(w));
     } catch (e) {
       // Module workers (the dev server) cannot importScripts MediaPipe's glue: run on the main thread instead.
       if (!/ModuleFactory|importScripts/.test(String(e))) throw e;
       this.mainThreadFaces = true;
-      return this.facesOnMain(await bitmap(), srcW);
+      return this.facesOnMain(await bitmap(), srcW, this.prog(w));
     }
   }
 
   /** Person mask (DeepLab), on a worker or (dev) on the main thread. */
   private async runSegment(w: WorkerRec, bitmap: () => Promise<ImageBitmap>): Promise<{ mask: Uint8Array; w: number; h: number }> {
+    const pr = this.prog(w);
     const onMain = async () => {
-      const seg = await loadSegmenter(this.base, (d, t) => { this.modelProgress = t ? d / t : 0; });
+      const seg = await loadSegmenter(this.base, (d, t) => pr(t ? d / t : 0));
+      pr(READY);
       const b = await bitmap();
       const r = segmentPeople(seg, b);
       b.close();
@@ -308,7 +377,7 @@ export class AnalysisQueue {
     };
     if (this.mainThreadFaces) return onMain();
     try {
-      return await this.call<{ mask: Uint8Array; w: number; h: number }>(w, { kind: "segment", bitmap: await bitmap(), base: this.base }, [], (pr) => { this.modelProgress = pr; });
+      return await this.call<{ mask: Uint8Array; w: number; h: number }>(w, { kind: "segment", bitmap: await bitmap(), base: this.base }, [], pr);
     } catch (e) {
       if (!/ModuleFactory|importScripts/.test(String(e))) throw e;
       this.mainThreadFaces = true;
@@ -318,8 +387,10 @@ export class AnalysisQueue {
 
   /** Person boxes, on a worker or (dev) on the main thread, like faces. */
   private async runPersons(w: WorkerRec, bitmap: () => Promise<ImageBitmap>, srcW: number, srcH: number): Promise<{ persons: PersonBox[] }> {
+    const pr = this.prog(w);
     const onMain = async () => {
-      const det = await loadPersonDetector(this.base, (d, t) => { this.modelProgress = t ? d / t : 0; });
+      const det = await loadPersonDetector(this.base, (d, t) => pr(t ? d / t : 0));
+      pr(READY);
       const b = await bitmap();
       const persons = detectPersons(det, b, srcW / b.width);
       b.close();
@@ -327,7 +398,7 @@ export class AnalysisQueue {
     };
     if (this.mainThreadFaces) return onMain();
     try {
-      return await this.call<{ persons: PersonBox[] }>(w, { kind: "persons", bitmap: await bitmap(), srcW, srcH, base: this.base }, [], (pr) => { this.modelProgress = pr; });
+      return await this.call<{ persons: PersonBox[] }>(w, { kind: "persons", bitmap: await bitmap(), srcW, srcH, base: this.base }, [], pr);
     } catch (e) {
       if (!/ModuleFactory|importScripts/.test(String(e))) throw e;
       this.mainThreadFaces = true;
@@ -335,8 +406,9 @@ export class AnalysisQueue {
     }
   }
 
-  private async facesOnMain(bmp: ImageBitmap, srcW: number): Promise<{ faces: FaceResult[] }> {
-    const det = await loadFaceDetector(this.base, (d, t) => { this.modelProgress = t ? d / t : 0; });
+  private async facesOnMain(bmp: ImageBitmap, srcW: number, pr?: (p: number) => void): Promise<{ faces: FaceResult[] }> {
+    const det = await loadFaceDetector(this.base, (d, t) => pr?.(t ? d / t : 0));
+    pr?.(READY);
     const faces = await detectFaces(det, bmp, srcW / bmp.width);
     bmp.close();
     return { faces };

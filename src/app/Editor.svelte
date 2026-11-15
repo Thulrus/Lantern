@@ -7,6 +7,7 @@
   import Library from "./Library.svelte";
   import ExportDialog from "./ExportDialog.svelte";
   import Hint from "../ui/Hint.svelte";
+  import AnalysisStatus from "./AnalysisStatus.svelte";
   import { app } from "$lib/store/project.svelte";
   let { id }: { id: string } = $props();
   let ready = $state(false);
@@ -18,7 +19,6 @@
     if (app.project?.id !== id) { if (!(await app.open(id))) { location.hash = "#/"; return; } }
     ready = true;
   });
-  const prog = $derived(app.progress());
 
   function key(e: KeyboardEvent) {
     const t = e.target as HTMLElement;
@@ -55,8 +55,9 @@
     <header class="row">
       <a href="#/" class="brand">◐</a>
       <input class="title" bind:value={app.project.title} onchange={() => app.save()} />
-      <span class="dim small status">{prog.faces < prog.total ? `faces found for ${prog.faces} of ${prog.total}` : prog.depth < prog.total ? `${prog.total} items analysed · depth for ${prog.depth}` : `${prog.total} items analysed, depth done`}{app.dirty ? " · saving…" : ""}</span>
-      {#if app.pendingUpgrade}<button class="small" onclick={applyUpgrade}>New analysis for {app.pendingUpgrade} items: apply</button>{/if}
+      <AnalysisStatus />
+      {#if app.dirty}<span class="dim small status">saving…</span>{/if}
+      {#if app.pendingUpgrade}<button class="small primary" onclick={applyUpgrade} title="New faces or depth arrived after you edited the show. Applying re-plans unlocked slides with them; locked slides stay as they are.">Apply new analysis ({app.pendingUpgrade} photo{app.pendingUpgrade > 1 ? "s" : ""})</button>{/if}
       <div class="row">
         <button class="ghost" onclick={() => app.undoEdit()} disabled={!app.canUndo} title="Undo (Ctrl+Z)">↶</button>
         <button class="ghost" onclick={() => app.redoEdit()} disabled={!app.canRedo} title="Redo (Ctrl+Shift+Z)">↷</button>

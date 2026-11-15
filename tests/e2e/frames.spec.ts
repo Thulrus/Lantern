@@ -31,7 +31,7 @@ test("dump 3D frames", async ({ page }) => {
   // FRAMES_FILL=1: generative fill behind people on, and wait for the fill stage too.
   page.on("console", (m) => { if (m.text().startsWith("[fill]")) console.log(m.text()); });   // reasons and face boxes of rejected fills
   if (process.env.FRAMES_FILL) await page.evaluate(() => (globalThis as any).lantern.setGenerativeFill("all")); // eslint-disable-line
-  await page.waitForFunction(() => /depth done/.test(document.body.innerText), null, { timeout: 600_000 });
+  await page.waitForFunction(() => { const d = (globalThis as any).lantern.pipeline().stages.find((x: { id: string }) => x.id === "depth"); return d.total > 0 && d.done + d.errors >= d.total; }, null, { timeout: 600_000 }); // eslint-disable-line
   if (process.env.FRAMES_FILL) {
     await page.waitForFunction(() => (globalThis as any).lantern.queue?.queued === 0, null, { timeout: 600_000 }); // eslint-disable-line
     const st = await page.evaluate(() => [...(globalThis as any).lantern.stageStatus].filter(([k]: [string]) => k.endsWith("|fill")).map(([k, v]: [string, string]) => `${k.slice(0, 8)} ${v}`)); // eslint-disable-line

@@ -2,6 +2,12 @@
   import { onMount } from "svelte";
   import Dropzone from "./Dropzone.svelte";
   import Seg from "../ui/Seg.svelte";
+  import Toggle from "../ui/Toggle.svelte";
+  import AnalysisStatus from "./AnalysisStatus.svelte";
+  import { modelById } from "$lib/models/registry";
+  import { modelStatus } from "$lib/models/fetch";
+  import { FILL_MODEL } from "$lib/analysis/fill";
+  import { fmtBytes } from "$lib/util/math";
   import { app } from "$lib/store/project.svelte";
   import { importer } from "$lib/media/importer.svelte";
   import { STYLES } from "$lib/planner/styles";
@@ -25,7 +31,12 @@
     app.userEdited = false;
     location.hash = `#/edit/${id}`;
   }
-  const prog = $derived(app.progress());
+  const pipe = $derived(app.pipeline());
+  const style = $derived(app.style);
+  const has3d = $derived((style?.depthShare ?? 0) > 0);
+  let fillCached = $state(false);
+  $effect(() => { void app.project?.generativeFill; void modelStatus(FILL_MODEL).then((s) => (fillCached = s.cached)); });
+  const fillSize = fmtBytes(modelById(FILL_MODEL)?.bytes ?? 0);
 </script>
 
 {#if ready && app.project}
@@ -36,7 +47,7 @@
         <h3>Style</h3>
         <div class="styles">
           {#each STYLES as s (s.id)}
-            <button class="style" class:on={app.project.styleId === s.id} onclick={() => { app.project!.styleId = s.id; app.save(); }}>
+            <button class="style" class:on={app.project.styleId === s.id} onclick={() => app.setStyle(s.id)}>
               <strong>{s.name}</strong><span class="dim small">{s.blurb}</span>
             </button>
           {/each}
@@ -58,10 +69,21 @@
         {#if importer.running && importer.progress}<progress value={importer.progress.done} max={importer.progress.total}></progress>{/if}
         <h3>Format</h3>
         <Seg label="" options={aspects} value={app.project.output.aspect} onchange={(v) => { app.project!.output.aspect = v; app.save(); }} />
+        <h3>3D and fill</h3>
+        <div class="card col opts">
+          <p class="small" class:dim={!has3d}>{has3d
+            ? `${style?.name} moves photos in 3D. Each photo's depth is measured on this device first; until then it gets a 2D move.`
+            : `${style?.name ?? "This style"} is 2D only. Pick Gentle, Cinematic, Upbeat or Travel for 3D moves.`}</p>
+          <Toggle label="Generative fill behind people"
+            help={`When the camera moves in 3D, it can uncover the background behind people. This paints that background with an on-device model, instead of a blurred halo. People themselves are never generated. ${fillCached ? "The model is downloaded." : `Downloads the model once (${fillSize}) when you turn it on.`} Slow: several seconds per photo.${has3d ? "" : ` ${style?.name ?? "This style"} is 2D, so the fill waits until you pick a 3D style.`}`}
+            on={app.project.generativeFill === "all"} onchange={(v) => app.setGenerativeFill(v ? "all" : "off")} />
+          <p class="dim small">Every option can be changed later in the editor (Show tab). New shows remember this choice.</p>
+        </div>
       </section>
     </div>
+    <AnalysisStatus mode="panel" />
     <footer class="row">
-      <span class="dim">{app.project.media.length} items · faces found for {prog.faces} of {prog.total}</span>
+      <span class="dim small">{app.project.media.length} items.{pipe.busy ? " You don't have to wait: the show is made now and improves as the analysis finishes." : ""}</span>
       <button class="primary big" onclick={make} disabled={!app.project.media.length}>Make my show</button>
     </footer>
   </div>
@@ -81,4 +103,5 @@
   footer { justify-content: space-between; margin-top: auto; }
   .big { font-size: 16px; padding: 12px 22px; }
   progress { width: 100%; accent-color: var(--accent); }
+  .opts p { margin: 0; }
 </style>

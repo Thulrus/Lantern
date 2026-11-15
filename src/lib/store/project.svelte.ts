@@ -2,22 +2,33 @@
 // Every edit goes through `edit()`, which records an undo step, locks the edited field on the
 // slide (spec §8.2) and autosaves.
 import { invalidateLayers, setGeneratedPlates } from "$lib/render/assets";
-import { AnalysisQueue, loadAnalysis, type StageStatus } from "$lib/analysis/queue";
+import { AnalysisQueue, loadAnalysis, type Activity, type StageId, type StageStatus } from "$lib/analysis/queue";
 import { compile } from "$lib/planner/compile";
 import { plan, relayout, type PlanResult } from "$lib/planner/plan";
 import { resolveStyle } from "$lib/planner/styles";
 import type { Aspect, Fps, LockField, MediaAnalysis, MusicAnalysis, OutHeight, Project, Slide, Timeline, TreatmentId } from "$lib/planner/types";
 import { uid } from "$lib/util/id";
-import { mediaDb, projectsDb, songsDb, type MediaRecord, type SongRecord } from "./db";
+import { analysisDb, mediaDb, projectsDb, songsDb, type MediaRecord, type SongRecord } from "./db";
 
 export const BASE = import.meta.env.BASE_URL;
+
+/** The generative fill choice is remembered for new shows (this browser only). */
+const FILL_PREF = "lantern.generativeFill";
+function fillPref(): Project["generativeFill"] {
+  try { return localStorage.getItem(FILL_PREF) === "all" ? "all" : "off"; } catch { return "off"; }
+}
+
+/** One analysis stage's progress over the open show's media. `done` counts finished items
+ *  (skipped ones, such as videos for the model stages, included). */
+export interface StageProgress { id: StageId; on: boolean; done: number; errors: number; skipped: number; running: number; total: number; firstError?: string }
+export interface Pipeline { stages: StageProgress[]; busy: boolean; etaS: number | null }
 
 export function newProject(title = "Untitled show"): Project {
   return {
     v: 1, id: uid("p"), title, seed: (Math.random() * 0x7fffffff) >>> 0, created: Date.now(), updated: Date.now(),
     output: { aspect: "16:9", height: 1080, fps: 30 }, styleId: "classic", styleOverrides: {},
     media: [], excluded: [], starred: [], order: "time", songs: [], fit: "show-to-music", slides: [],
-    titles: { chapters: false }, generativeFill: "off", beatSync: "cuts", depthStrength: 1,
+    titles: { chapters: false }, generativeFill: fillPref(), beatSync: "cuts", depthStrength: 1,
   };
 }
 
@@ -28,6 +39,9 @@ class AppState {
   songs = $state(new Map<string, SongRecord>());
   records = $state(new Map<string, MediaRecord>());
   stageStatus = $state(new Map<string, StageStatus["status"]>());
+  /** What each analysis worker is doing right now (downloads, model loads, the photo in hand). */
+  activity = $state<Activity[]>([]);
+  private stageErrors = new Map<string, string>();
   timeline = $state<Timeline | null>(null);
   planResult = $state<PlanResult | null>(null);
   selected = $state<string[]>([]);
@@ -53,7 +67,9 @@ class AppState {
   ensureQueue(): AnalysisQueue {
     if (!this.queue) {
       this.queue = new AnalysisQueue({ base: BASE });
-      this.unsub = this.queue.onStatus((s) => this.onStage(s));
+      const a = this.queue.onStatus((s) => this.onStage(s));
+      const b = this.queue.onActivity((x) => (this.activity = x));
+      this.unsub = () => { a(); b(); };
     }
     return this.queue;
   }
@@ -61,7 +77,9 @@ class AppState {
   private onStage(s: StageStatus): void {
     this.stageStatus.set(`${s.hash}|${s.stage}`, s.status);
     this.stageStatus = new Map(this.stageStatus);
-    if (s.stage === "fill" && s.status === "ok") invalidateLayers(s.hash);
+    if (s.status === "error" && s.error) this.stageErrors.set(`${s.hash}|${s.stage}`, s.error);
+    else this.stageErrors.delete(`${s.hash}|${s.stage}`);
+    if ((s.stage === "fill" || s.stage === "depth") && s.status === "ok") invalidateLayers(s.hash);
     if (s.status === "ok" && this.project?.media.includes(s.hash)) {
       this.facesPending.add(s.hash);
       clearTimeout(this.replanTimer);
@@ -123,17 +141,57 @@ class AppState {
     this.songs = new Map(this.songs); this.music = new Map(this.music);
   }
 
-  /** Generative fill reaches the plates behind people only in "all" (spec §4.6); margins are not built yet. */
+  /** Whether generative fill runs: chosen ("all"; margins are not built yet, spec §4.6) and the
+   *  style has 3D moves, the only thing that shows the plates behind people. */
+  get fillActive(): boolean {
+    return this.project?.generativeFill === "all" && (this.style?.depthShare ?? 0) > 0;
+  }
+
+  /** Start or stop the fill stage to match the project; called after every change. */
   private applyFill(): void {
     if (!this.project) return;
-    const on = this.project.generativeFill === "all";
+    const on = this.fillActive;
     setGeneratedPlates(on);
     this.ensureQueue().setFill(on, this.project.media);
   }
 
-  setGenerativeFill(v: Project["generativeFill"]): void {
-    this.edit((p) => { p.generativeFill = v; });
+  /** Pick a style (the Make screen: not an edit, the show is planned afterwards). */
+  setStyle(id: string): void {
+    if (!this.project) return;
+    this.project.styleId = id;
     this.applyFill();
+    this.save();
+  }
+
+  setGenerativeFill(v: Project["generativeFill"]): void {
+    // Not a plan edit: analysis results keep re-planning the show by themselves afterwards.
+    const edited = this.userEdited;
+    this.edit((p) => { p.generativeFill = v; });
+    this.userEdited = edited;
+    try { localStorage.setItem(FILL_PREF, v); } catch { /* storage blocked: the show keeps its own setting */ }
+  }
+
+  /** Run the model stages (faces, depth, fill) again for the show's photos: their cached results
+   *  are dropped and the queue starts over. The current results stay in use until new ones land. */
+  async reanalyse(): Promise<void> {
+    const p = this.project;
+    if (!p) return;
+    const stages: StageId[] = ["faces", "depth", "fill"];
+    const q = this.ensureQueue();
+    q.forget(p.media, stages);
+    await analysisDb.removeStages(p.media, stages);
+    for (const h of p.media) for (const st of stages) { this.stageStatus.delete(`${h}|${st}`); this.stageErrors.delete(`${h}|${st}`); }
+    this.stageStatus = new Map(this.stageStatus);
+    q.enqueue(p.media);
+    this.applyFill();
+  }
+
+  /** After the analysis cache is cleared (Settings): forget every result and start the open show over. */
+  restartAnalysis(): void {
+    this.queue?.forgetAll();
+    this.stageStatus = new Map();
+    this.stageErrors.clear();
+    if (this.project) { this.ensureQueue().enqueue(this.project.media); this.applyFill(); }
   }
 
   /** Add media to the project (after import). */
@@ -191,6 +249,7 @@ class AppState {
     if (opts.replan) { const r = plan(p, this.analysis, this.music); p.slides = r.slides; this.planResult = r; }
     else this.ripple(p);
     this.project = p;
+    this.applyFill();
     this.recompile();
     this.save();
   }
@@ -239,13 +298,13 @@ class AppState {
     const p = this.undo.pop();
     if (!p || !this.project) return;
     this.redo.push(structuredClone($state.snapshot(this.project)) as Project);
-    this.project = p; this.recompile(); this.save();
+    this.project = p; this.applyFill(); this.recompile(); this.save();
   }
   redoEdit(): void {
     const p = this.redo.pop();
     if (!p || !this.project) return;
     this.undo.push(structuredClone($state.snapshot(this.project)) as Project);
-    this.project = p; this.recompile(); this.save();
+    this.project = p; this.applyFill(); this.recompile(); this.save();
   }
 
   unlock(slideId: string, field: LockField): void {
@@ -293,19 +352,33 @@ class AppState {
     window.setTimeout(() => { if (this.toast === msg) this.toast = null; }, ms);
   }
 
-  /** Analysis progress for the UI ("faces found for 84 of 120"). */
-  progress(): { basics: number; faces: number; depth: number; total: number } {
+  /** Per-stage progress for the analysis panel, plus a rough time left from recent job times. */
+  pipeline(): Pipeline {
     const p = this.project;
-    if (!p) return { basics: 0, faces: 0, depth: 0, total: 0 };
-    let b = 0, f = 0, d = 0;
-    for (const h of p.media) {
-      if (this.stageStatus.get(`${h}|basics`) === "ok" || this.analysis.get(h)?.basics) b++;
-      const fs = this.stageStatus.get(`${h}|faces`);
-      if (fs === "ok" || fs === "skipped" || this.analysis.get(h)?.faces) f++;
-      const ds = this.stageStatus.get(`${h}|depth`);
-      if (ds === "ok" || ds === "skipped" || ds === "error" || this.analysis.get(h)?.depth) d++;
+    const fillOn = this.fillActive;
+    const ids: StageId[] = ["basics", "faces", "depth", "fill"];
+    const stages = ids.map((id): StageProgress => {
+      const sp: StageProgress = { id, on: id !== "fill" || fillOn, done: 0, errors: 0, skipped: 0, running: 0, total: p?.media.length ?? 0 };
+      for (const h of p?.media ?? []) {
+        const st = this.stageStatus.get(`${h}|${id}`);
+        const a = this.analysis.get(h);
+        const have = id === "basics" ? !!a?.basics : id === "faces" ? !!a?.faces : id === "depth" ? !!a?.depth : false;
+        if (st === "error") { sp.errors++; sp.firstError ??= this.stageErrors.get(`${h}|${id}`); }
+        else if (st === "skipped") { sp.skipped++; sp.done++; }
+        else if (st === "ok" || (!st && have)) sp.done++;
+        else if (st === "running") sp.running++;
+      }
+      return sp;
+    });
+    const live = stages.filter((s) => s.on && s.done + s.errors < s.total);
+    let eta: number | null = 0;
+    for (const s of live) {
+      const ms = this.queue?.stageMs(s.id) ?? null;
+      if (ms === null) { eta = null; break; }
+      eta += (s.total - s.done - s.errors) * ms;
     }
-    return { basics: b, faces: f, depth: d, total: p.media.length };
+    const workers = this.queue?.workerCount ?? 1;
+    return { stages, busy: live.length > 0, etaS: eta === null ? null : eta / 1000 / workers };
   }
 
   close(): void {

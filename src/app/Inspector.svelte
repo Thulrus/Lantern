@@ -131,7 +131,7 @@
     </div>
     <div class="field"><span class="lbl">Generative fill</span>
       <Seg label="" options={[{ v: "off", label: "Off" }, { v: "all", label: "Behind people" }]} value={app.project.generativeFill === "all" ? "all" : "off"} onchange={(v) => app.setGenerativeFill(v as "off" | "all")} />
-      <span class="dim small">Fills the background a 3D move reveals behind people with an on-device model (LaMa, 106 MB download, a few seconds per photo). People themselves are never generated; a fill that shows a face is discarded.</span>
+      <span class="dim small">Fills the background a 3D move reveals behind people with an on-device model (LaMa, 106 MB download, a few seconds per photo). People themselves are never generated; a fill that shows a face is discarded.{(app.style?.depthShare ?? 0) > 0 ? "" : ` ${app.style?.name} is 2D, so the fill waits for a 3D style.`} Progress shows under Analysis at the top.</span>
     </div>
     <button onclick={() => app.replan({ newSeed: true })}>Re-roll (new seed, locks kept)</button>
     {#if app.planResult?.warnings.length}<div class="warn">{#each app.planResult.warnings as w}<div>{w}</div>{/each}</div>{/if}

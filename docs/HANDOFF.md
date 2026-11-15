@@ -1,10 +1,44 @@
 # Lantern: development status and handoff
 
-Status as of 2026-11-14 (sixth session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed, and Depth Space (M5) mostly built: depth, derived mattes and plates, two-layer meshes, depth wipe and fly-through.** Import
+Status as of 2026-11-14 (seventh session: analysis progress panel, fill on the Make screen, re-analysis; see Session 7).
+Earlier summary (sixth session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed, and Depth Space (M5) mostly built: depth, derived mattes and plates, two-layer meshes, depth wipe and fly-through.** Import
 photos and songs, get an automatically planned 2D show with beat-synced cuts, edit it in the
 editor, export an MP4. All of it was exercised end to end in headless Chromium by the Playwright
 test (`tests/e2e/show.spec.ts`) against the owner's local `example_photos/` folder. The owner
 has committed ("Basics working") and deployed to GitHub Pages.
+
+## Session 7 (2026-11-14): keeping the user informed
+
+The owner tested the deployed site: after import the app looked finished while models were still
+downloading; it was unclear what the analysis was doing; and they downloaded LaMa in Settings,
+re-imported, and saw no change (fill is a per-show switch, default Off, hidden in the Show tab;
+downloading a model enables nothing). Done (check clean, 42 unit tests, `show.spec.ts` and the new
+`reanalyse.spec.ts` pass):
+
+- **Analysis panel** (`src/app/AnalysisStatus.svelte`): inline on the Make screen, a pill in the
+  editor header that opens it as a popover. One row per stage (Reading photos, Finding faces,
+  Measuring depth, Filling behind people) with counts, failures and the first error, a line on
+  what each stage changes in the show, "Right now" lines per worker, % done and a rough time left,
+  and what happens next (auto re-plan vs. "Apply new analysis" after edits).
+- **Activity from the queue** (`queue.ts`): `Activity` per worker (`phase` download / load / work,
+  model, share done, step text) via `onActivity`; the worker posts `{ ready: true }` after each
+  model load so "loading into memory" ends when the work starts. `stageMs` keeps recent job times
+  for the estimate. `resident` now also tracks the helper models (segment, persons).
+- **Fill discoverable**: a "3D and fill" section on the Make screen (toggle, download size or
+  "downloaded", what 2D styles mean). The choice is remembered for new shows (`localStorage`
+  `lantern.generativeFill`). Toggling fill no longer counts as a plan edit. Fill runs only when
+  the style has 3D (`app.fillActive`): Classic used to run LaMa for nothing. `applyFill` now runs
+  after every edit, undo and redo (fixes "undo of the fill switch").
+- **Run analysis again** (panel button, `app.reanalyse`): drops the faces / depth / fill records
+  for the show's items (`analysisDb.removeStages`, `queue.forget`) and re-queues; old results stay
+  in use until new ones land. Settings → Clear analysis cache now also restarts the open show
+  (`app.restartAnalysis`).
+- **Settings → Models**: says nothing needs downloading there; models grouped by when they are
+  fetched (`ModelSpec.when`: always / fill / unused) with a `short` name used in progress lines.
+- Storyboard dots: a fill dot when fill runs, a pulsing dot for the running stage, tooltips.
+
+Ideas not done: show fill rejections in the panel ("2 kept the plain background: a face appeared");
+a first-run hint pointing at the pill; per-photo progress inside a long LaMa inference.
 
 ## Session 6 (2026-11-14): generative fill behind people (M6)
 
@@ -47,8 +81,7 @@ account, public, Apache-2.0); registry `lama-512` pins commit `feb119a` and SHA-
 
 Next for M6: WebGPU
 provider for speed; mirrored crops at frame edges (spec §4.6); margins / Extend; the
-"show generated pixels" overlay; plate depth from a depth pass on the plate. Undo of the fill
-switch does not re-run `applyFill` (switch it again).
+"show generated pixels" overlay; plate depth from a depth pass on the plate.
 
 ## Session 5 (2026-11-14): owner's observations (`Observations.md`)
 
