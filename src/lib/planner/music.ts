@@ -70,12 +70,21 @@ export function musicGrid(project: Project, analyses: Map<string, MusicAnalysis>
 /** Audio events for the songs: trims, fades, equal-power crossfades, loudness normalization. */
 export function songEvents(grid: MusicGrid, showDur: number, ducks: [number, number, number][]): AudioEvent[] {
   const target = -16; // LUFS-ish target for all songs
-  return grid.songs.map((s, i) => {
+  // The show can end before the music does (fewer photos than songs, or an early cut): the song
+  // playing at the end is the last one heard, and it fades out by the show's end. Songs that
+  // would start after the end are dropped. Only the last loaded song used to get the end fade,
+  // so a show ending inside an earlier song stopped dead (owner, 2026-11-15).
+  const heard = grid.songs.filter((s, i) => i === 0 || s.at < showDur - 0.05);
+  return heard.map((s, i) => {
     const len = s.out - s.in;
     const gain = Math.pow(10, (Math.min(6, Math.max(-12, target - s.analysis.loudness)) / 20)) * s.ref.gain;
     const pts: [number, number][] = [];
-    const fin = i === 0 ? Math.max(s.ref.fadeIn, 0.05) : SONG_CROSSFADE, fout = i === grid.songs.length - 1 ? Math.max(s.ref.fadeOut, 0.05) : SONG_CROSSFADE;
-    const end = Math.min(s.at + len, i === grid.songs.length - 1 ? showDur : Infinity);
+    const last = i === heard.length - 1;
+    const end = Math.min(s.at + len, showDur);
+    const fin = Math.min(i === 0 ? Math.max(s.ref.fadeIn, 0.05) : SONG_CROSSFADE, Math.max(end - s.at, 0) / 2);
+    // A song cut short by the show's end fades for its own fade-out setting; one that plays to its
+    // natural end keeps the crossfade into the next song.
+    const fout = Math.min(last || end < s.at + len - 1e-6 ? Math.max(s.ref.fadeOut, 0.05) : SONG_CROSSFADE, Math.max(end - s.at - fin, 0.05));
     pts.push([s.at, 0]);
     pts.push([s.at + fin * 0.5, Math.SQRT1_2 * gain]);
     pts.push([s.at + fin, gain]);

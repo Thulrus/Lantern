@@ -121,9 +121,13 @@ void main() {
     c = mix(a, b, smoothstep(0.35, 0.65, e));
   } else if (mode == 7) {                                                                             // depth wipe: B arrives far plane first, subject last
     float f = 0.08;
-    float nb = texture(u_db, uv).r;
+    vec4 db = texture(u_db, uv);
+    float nb = db.r;
     float e = mix(-f, 1.0 + f, p);                     // starts below the nearest plane so frame one is all A (it used to start at 0 and pop the far plane in)
-    float w = smoothstep(nb - f, nb + f, e);
+    // Only B's photo pixels wipe by depth (alpha = mesh coverage). Its letterbox bars and split
+    // gutters have no depth; wiping them as the far plane cut A to B's shape on the first frames
+    // (owner, 2026-11-14), so they fade in late, after most of the photo has arrived.
+    float w = mix(smoothstep(0.35, 1.0, p), smoothstep(nb - f, nb + f, e), db.a);
     c = mix(texture(u_a, uv).rgb, texture(u_b, uv).rgb, w);
   } else if (mode == 8) {                                                                             // fly-through: A zooms in and its planes pass the camera nearest first; B settles behind
     float e = p;
@@ -301,6 +305,14 @@ export class Renderer {
     gl.viewport(0, 0, w, h);
   }
 
+  /** Clear the bound target: colour to black, the depth attachment to far with zero coverage
+   *  (its alpha says where a photo mesh was drawn; letterbox fills and gutters leave it 0). */
+  private clearTarget(): void {
+    const gl = this.gl;
+    gl.clearBufferfv(gl.COLOR, 0, [0, 0, 0, 1]);
+    gl.clearBufferfv(gl.COLOR, 1, [0, 0, 0, 0]);
+  }
+
   /** Resolve a multisampled target into its textures (no-op without MSAA). */
   private resolve(i: number): void {
     const gl = this.gl, t = this.targets[i];
@@ -348,10 +360,10 @@ export class Renderer {
     // Render the incoming slide into target 1 and the outgoing into target 0.
     this.target(1);
     gl.disable(gl.SCISSOR_TEST);
-    gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+    this.clearTarget();
     if (b) this.slide(b, t, [0, 0, W, H]);
     this.resolve(1);
-    if (!soloB && a) { this.target(0); gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); this.slide(a, t, [0, 0, W, H]); this.resolve(0); }
+    if (!soloB && a) { this.target(0); this.clearTarget(); this.slide(a, t, [0, 0, W, H]); this.resolve(0); }
     // Composite to the canvas.
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, W, H);

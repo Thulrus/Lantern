@@ -89,6 +89,7 @@ export const peopleDb = {
 export const blobDb = {
   async put(key: string, blob: Blob): Promise<void> { await (await db()).put("blobs", { key, blob }); },
   async get(key: string): Promise<Blob | undefined> { return (await (await db()).get("blobs", key))?.blob; },
+  async keys(prefix: string): Promise<string[]> { return (await (await db()).getAllKeys("blobs")).filter((k) => k.startsWith(prefix)); },
   async removePrefix(prefix: string): Promise<void> {
     const d = await db();
     for (const k of await d.getAllKeys("blobs")) if (k.startsWith(prefix)) await d.delete("blobs", k);

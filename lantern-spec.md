@@ -636,6 +636,15 @@ and quota in Settings, with "Clear analysis cache" per project and globally.
 **Project files**: export and import a `.lantern` package (a zip): the project JSON, optionally
 the analysis cache (moves a project between machines without re-analysis), and optionally the
 media itself ("Package with media").
+Built 2026-11-14 (`src/lib/store/package.ts`, `zip.ts`): a stored (uncompressed) zip written from
+Blob slices, no dependency, no zip64 (packages over 4 GB are refused). `lantern.json` holds the
+format tag, version, options, the project and the media and song records (song analysis
+included); `analysis.json` the analysis records; `files/<hash>/<name>` the derived files;
+`originals/<hash>` the originals. Thumbnails, proxies and basics always travel, so a package
+without media still opens and plays (photos at proxy size, songs silent); "Include analysis"
+adds faces, depth and fill records and their files. Import never overwrites existing records for
+the same hash; a project id that already exists gets a new id and "(copy)". Save from the
+editor ("Save file"), open from the Start screen or by dropping the file.
 
 ### 8.2 Project
 
@@ -746,7 +755,10 @@ one-off parity script, not a shipped test.
 - Transitions render both slides into offscreen framebuffers and combine them in a transition
   shader; depth wipe and fly-through read the depth attachments (built 2026-11-11: the wipe
   reveals the incoming slide far plane first and subject last; the fly-through zooms the outgoing
-  slide in while its planes dissolve nearest first).
+  slide in while its planes dissolve nearest first). The depth attachment's alpha is mesh
+  coverage (cleared to 0): only the incoming slide's photo pixels wipe by depth, while its
+  letterbox bars and pair gutter fade in late (from 35 % of the transition). Treating them as the
+  far plane cut the outgoing photo to the next slide's shape on the first frames (2026-11-14).
 - Captions and titles: text drawn with Canvas 2D into textures, composited last. Fonts are
   bundled (OFL-licensed), never fetched at runtime.
 - Performance: 60 fps preview on Full tier; never below 30 on Standard. Preload a window of
@@ -896,7 +908,7 @@ Each milestone ends with something a person can try on the deployed Pages site.
 | **M0** | **Feasibility spikes** | A bench page runs every model candidate (§4.3) in Chrome, Firefox and Safari on WebGPU and WASM, with ms per image, peak memory and a good / usable / wrong review page (port Flicker's `bench` idea). An export spike writes 60 s of WebGL with AAC to MP4 that plays in QuickTime, VLC and on phones. A Pages spike proves cross-origin isolation via the service worker plus CORS model fetches. A beat-tracking spike measures accuracy (§6.2). Results recorded in the spec, with model picks adopted. |
 | **M1** | **Import, library, 2D show** | Import, basics, faces and CLIP; library with duplicates and quality flags; planner passes 1–4 and 6 with 2D treatments only (push, pan, group sweep, tour, hold); crossfades and cuts; preview player. |
 | **M2** | **Music** | Song import, analysis, editor display and correction; music fit (pass 5); several songs with crossfades; mix in preview. |
-| **M3** | **Editor** | Storyboard, timeline, inspector, framing editor, locks, alternates, re-roll, undo, autosave, project packages. |
+| **M3** | **Editor** | Storyboard, timeline, inspector, framing editor, locks, alternates, re-roll, undo, autosave, project packages. Project packages built 2026-11-14. |
 | **M4** | **Export** | The export pipeline, codec fallbacks, progress, golden-frame and sync tests. |
 | **M5** | **Depth Space** | Depth and matte stages, two-layer meshes, depth treatments, depth wipe, fly-through, disc DOF, upgrade-in-place. Depth stage, single-layer mesh displacement, depth treatments and upgrade-in-place built 2026-11-10; depth-derived mattes, pull-push plates, two-layer meshes, multisampled targets, depth wipe and fly-through built 2026-11-11. Remaining: disc DOF (mip-bias blur is used), a segmentation model for finer mattes, WebGPU provider, GPU timings. |
 | **M6** | **Fills** | Plates, margins, person guard, Extend fill, pairs and grids, "show generated pixels". |
@@ -948,8 +960,8 @@ for Lantern; drop everything listed under "leave behind".
 ## 15. Open questions for the owner
 
 1. **Name.** "Lantern" is chosen (owner, 2026-11-10). Check for clashes before publishing.
-2. **License for Lantern's own code.** MIT or Apache-2.0 would match the model choices. (Using
-   Essentia.js for audio would force AGPL, which is one reason this spec writes its own DSP.)
+2. **License for Lantern's own code.** Decided: Apache-2.0 (owner, 2026-11-15; `LICENSE`). (Using
+   Essentia.js for audio would have forced AGPL, which is one reason this spec writes its own DSP.)
 3. **Demo content.** Which CC0 photos and music to bundle for the demo project and tests.
 4. **Hosting of model weights.** A Hugging Face repo under whose account?
 5. **Phones.** Is creating shows on a phone a goal for v1, or is the phone tier playback and

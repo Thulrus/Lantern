@@ -48,6 +48,18 @@ export async function getFile(hash: string, name: string): Promise<Blob | null> 
   }
 }
 
+/** Names of the derived files kept for one media item. */
+export async function listFiles(hash: string): Promise<string[]> {
+  const d = await mediaDir(hash, false);
+  if (!d) {
+    if (await dir()) return [];   // OPFS works, the item just has no files
+    return (await blobDb.keys(hash + "/")).map((k) => k.slice(hash.length + 1));
+  }
+  const out: string[] = [];
+  for await (const [name, h] of d as unknown as AsyncIterable<[string, FileSystemHandle]>) if (h.kind === "file") out.push(name);
+  return out;
+}
+
 export async function deleteFile(hash: string, name: string): Promise<void> {
   const d = await mediaDir(hash, false);
   if (!d) { await blobDb.removePrefix(`${hash}/${name}`); return; }

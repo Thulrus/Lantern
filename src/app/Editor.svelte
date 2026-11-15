@@ -6,6 +6,7 @@
   import Inspector from "./Inspector.svelte";
   import Library from "./Library.svelte";
   import ExportDialog from "./ExportDialog.svelte";
+  import PackageDialog from "./PackageDialog.svelte";
   import Hint from "../ui/Hint.svelte";
   import AnalysisStatus from "./AnalysisStatus.svelte";
   import { app } from "$lib/store/project.svelte";
@@ -14,6 +15,7 @@
   let bottom = $state<"storyboard" | "timeline">("storyboard");
   let library = $state(false);
   let exporting = $state(false);
+  let packaging = $state(false);
   let preview = $state<Preview | null>(null);
   onMount(async () => {
     if (app.project?.id !== id) { if (!(await app.open(id))) { location.hash = "#/"; return; } }
@@ -63,6 +65,7 @@
         <button class="ghost" onclick={() => app.redoEdit()} disabled={!app.canRedo} title="Redo (Ctrl+Shift+Z)">↷</button>
         <button onclick={() => (library = !library)}>Library</button>
         <button onclick={() => app.replan({ newSeed: true })} title="Re-plan every unlocked choice with a new seed">Re-roll</button>
+        <button onclick={() => (packaging = true)} title="Save the show with its photos and analysis as a .lantern file, to open it elsewhere">Save file</button>
         <button class="primary" onclick={() => (exporting = true)}>Export</button>
       </div>
     </header>
@@ -85,6 +88,7 @@
     <Hint lines={["Space plays · ← → select slides", "Drag a slide to reorder · L locks it", "Ctrl+Z undoes anything"]} />
   </div>
   {#if exporting}<ExportDialog onclose={() => (exporting = false)} />{/if}
+  {#if packaging}<PackageDialog onclose={() => (packaging = false)} />{/if}
 {/if}
 
 <style>

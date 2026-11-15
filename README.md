@@ -19,11 +19,13 @@ static web page; all analysis, rendering and video encoding runs locally in your
 
 Try it [on GitHub Pages](https://thulrus.github.io/Lantern/).
 
-> **Status:** early development. The first vertical slice works: import photos and songs, the
-> automatic director with beat-synced cuts, 3D moves on depth-layered photos (subject and
-> background, no upload), depth-aware transitions, the editor and MP4 export. Generative fills
-> and video clips are next. See [`lantern-spec.md`](lantern-spec.md) for the plan
-> and [`docs/HANDOFF.md`](docs/HANDOFF.md) for progress.
+> **Status:** beta. Import photos, videos and songs; the automatic director with beat-synced
+> cuts; 3D moves on depth-layered photos (subject and background) with depth-aware transitions;
+> optional generative fill behind people (LaMa, with a person guard); the editor; MP4 export; and
+> `.lantern` project files to move a show to another browser or computer. Still to come: video
+> scanning for highlights, people and featured person, and a speed pass on GPUs. See
+> [`lantern-spec.md`](lantern-spec.md) for the plan and [`docs/HANDOFF.md`](docs/HANDOFF.md) for
+> progress.
 
 ## Browser support (planned)
 
@@ -35,7 +37,7 @@ Safari will work with fewer features and slower analysis. Phones can play and li
 ```sh
 npm install
 npm run dev        # dev server
-npm test           # unit tests (planner, music DSP, camera model)
+npm test           # unit tests (planner, music DSP, camera, layers, fill, zip)
 npm run check      # type check
 npm run e2e        # Playwright end-to-end (Chromium)
 npm run build      # static build in dist/
@@ -46,4 +48,6 @@ models and WebCodecs (via Mediabunny) for export. Deploys to GitHub Pages from `
 
 ## License
 
-To be decided (MIT or Apache-2.0).
+Lantern's code is licensed under the [Apache License 2.0](LICENSE). The models it downloads
+and the bundled fonts keep their own permissive licenses, listed in Settings → Models and in
+[`lantern-spec.md`](lantern-spec.md).

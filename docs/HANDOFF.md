@@ -1,11 +1,47 @@
 # Lantern: development status and handoff
 
-Status as of 2026-11-14 (seventh session: analysis progress panel, fill on the Make screen, re-analysis; see Session 7).
+Status as of 2026-11-15 (eighth session: depth-wipe crop bug, `.lantern` project files, Apache-2.0, music end fade; see Sessions 8 and 8b).
 Earlier summary (sixth session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed, and Depth Space (M5) mostly built: depth, derived mattes and plates, two-layer meshes, depth wipe and fly-through.** Import
 photos and songs, get an automatically planned 2D show with beat-synced cuts, edit it in the
 editor, export an MP4. All of it was exercised end to end in headless Chromium by the Playwright
 test (`tests/e2e/show.spec.ts`) against the owner's local `example_photos/` folder. The owner
 has committed ("Basics working") and deployed to GitHub Pages.
+
+## Session 8b (2026-11-15): license, music end fade
+
+- **License: Apache-2.0** (owner). `LICENSE` is the canonical text; `package.json` `license`,
+  README and spec §15 Q2 updated.
+- **Music cut off when the photos ran out**: `songEvents` (`planner/music.ts`) gave the end fade
+  and the cap at the show's end only to the *last loaded* song. With two or more songs and a show
+  ending inside an earlier one, that song kept its full length and its crossfade, and playback
+  stopped dead at the end of the timeline. Now the song playing when the show ends is the last
+  one heard (it fades over its own Fade-out setting, default 3 s, ending at the show's end),
+  songs that would start after the end are dropped, and fades are squeezed to fit very short
+  plays. Unit test "fades the music out at the end of the show, whichever song is playing".
+
+## Session 8 (2026-11-14): wrapping up (crop bug, project files)
+
+Owner asked to start wrapping up. Done (check clean, 46 unit tests; e2e `show`, `reanalyse` and
+the new `transitions`, `package` specs pass):
+
+- **Next slide's crop showing at the end of a slide** (`Observations.md`): the depth wipe reveals
+  the incoming slide far plane first, and its letterbox bars and pair gutter had the cleared
+  depth (0 = farthest), so they arrived on the first frames and cut the outgoing photo to the next
+  slide's shape. The depth attachment is now cleared with alpha 0 (`Renderer.clearTarget`), so its
+  alpha is mesh coverage; uncovered pixels fade in late (`smoothstep(0.35, 1, p)`) instead of by
+  depth. `tests/e2e/transitions.spec.ts` (synthetic photos, no `example_photos/` needed) compares
+  the gutter and bar columns of an early wipe frame with a crossfade at the same moment: old code
+  38 / 31 levels apart, new 9 / 7. Note: a square photo on 16:9 is cover-fitted (no bars); a tall
+  portrait alone is what gets bars. The owner can clear the entry in `Observations.md` (I left it).
+- **`.lantern` project files** (spec §8.1, last open M3 item): `src/lib/store/zip.ts` (stored zip,
+  CRC32, Blob slices, no dependency; unit-tested, including `unzip -t`) and
+  `src/lib/store/package.ts` (build / import / save). Editor header → **Save file** (sheet with
+  "Include analysis" and "Include original files", size estimate); Start screen → "Open a
+  .lantern file", or drop the file on the drop zone. Thumbnails, proxies, basics and song
+  analysis always travel; import keeps what the browser already has for a hash; a clashing
+  project id gets a new id and "(copy)". `tests/e2e/package.spec.ts` round-trips a show into a
+  fresh browser context. `tests/e2e/synthetic.ts` makes test photos in the page.
+- README status refreshed (beta, what exists, what is still to come).
 
 ## Session 7 (2026-11-14): keeping the user informed
 
@@ -240,7 +276,7 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 | M0 | Feasibility spikes | Mostly done in-browser (see spec §13.1). Open: deployed-site isolation check, real-song beat accuracy, player compatibility of the MP4, Firefox/Safari matrix, GPU timings. |
 | M1 | Import, library, 2D show | Done except CLIP embeddings/tags (story order falls back to time + heuristics) and HEIC. |
 | M2 | Music | Done: analysis, fit, several songs with crossfades, mix in preview, basic corrections (tempo alt, grid shift, trims), 30-minute song limit, early fade-out when music outlasts photos. No drag-to-correct sections, no section looping for "music to show", beat accuracy unmeasured on annotated songs. |
-| M3 | Editor | Largely done. Missing: project package (.lantern zip) export/import, batch-apply UI beyond multi-select edits, phone layout polish. |
+| M3 | Editor | Done except batch-apply UI beyond multi-select edits and phone layout polish. Project files (`.lantern`) built in session 8. |
 | M4 | Export | Core pipeline done and verified with ffprobe. Missing: golden-frame and A/V sync tests, worker-side rendering (export runs on the main thread with an OffscreenCanvas), WebCodecs frame-accurate video decode (uses `<video>` seeks). |
 | M5 | Depth Space | Mostly done: depth stage, depth-derived mattes and pull-push plates, two-layer meshes, depth wipe and fly-through, 3D treatments when depth and a style with `depthShare > 0` allow. Missing: disc DOF, a segmentation model for finer mattes (full tier), WebGPU provider, GPU timings, threshold tuning on more photos. |
 | M6 | Fills | Plates done (opt-in): LaMa fill, person segmentation keeps whole people on one layer, face + person guard, PatchMatch fallback. Missing: smaller/faster model, mirrored crops, margins/Extend, generated-pixels overlay, plate depth. |
@@ -262,10 +298,9 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 - The CSP allows `storage.googleapis.com` for the MediaPipe weights until a Hugging Face repo exists (spec §2.1, §15 Q4).
 - Export runs on the main thread; a long export blocks the UI. Move the renderer into a worker (OffscreenCanvas transfer) next.
 - No CLIP: `story` order uses time plus face heuristics; tags are empty.
-- Plates are classical pull-push fills (blurry); no inpainting model and no person guard yet (nothing generative exists, so the guard has nothing to check). The parallax band around subjects shows the blur.
+- Without generative fill, plates are classical pull-push + PatchMatch fills (soft on big holes); the parallax band around subjects shows it.
 - Multi-threaded ONNX Runtime hung in headless Chromium; the watchdog falls back to one thread. Unverified in real browsers.
 - Playwright uses SwiftShader; GPU performance is unmeasured. Chrome headless had no AAC encoder (Opus-in-MP4 was used).
-- The `.lantern` project package is not implemented.
 - The e2e test skips the picker and uses the download path.
 
 ## Next steps
@@ -276,4 +311,6 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 3b. M6 Fills, continuing: owner to eyeball fills on a GPU; 8-bit LaMa (needs a host), margins/Extend, the generated-pixels overlay, mirrored crops at frame edges.
 4. CLIP ViT-B/32 image tower + build-time tag embeddings (`npm run tags` is declared but the script does not exist yet).
 5. Move export rendering into a worker; add golden-frame and A/V sync tests.
-6. Project packages, people clusters, flipbooks, video scan stage.
+6. People clusters, flipbooks, video scan stage.
+7. Owner decisions still open for a 1.0: demo content (spec §15 Q3), phones (Q5).
+8. Small UX ideas: fill rejections in the analysis panel, a first-run hint at the analysis pill.

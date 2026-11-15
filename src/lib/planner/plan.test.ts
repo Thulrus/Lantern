@@ -174,6 +174,29 @@ describe("music longer than the photos", () => {
     expect(tl.dur).toBeCloseTo(end, 3);
     expect(tl.audio[0].out - tl.audio[0].in).toBeCloseTo(end, 3);
   });
+  it("fades the music out at the end of the show, whichever song is playing", () => {
+    const gainAt = (pts: [number, number][], t: number) => {
+      for (let i = 1; i < pts.length; i++) if (t <= pts[i][0]) { const [t0, g0] = pts[i - 1], [t1, g1] = pts[i]; return t1 > t0 ? g0 + ((g1 - g0) * (t - t0)) / (t1 - t0) : g1; }
+      return pts[pts.length - 1][1];
+    };
+    const media = Array.from({ length: 6 }, (_, i) => `h${i}`);
+    const analysis = new Map(media.map((h, i) => [h, photo(i)]));
+    // Two songs, few photos: the show ends inside the first song (owner, 2026-11-15: it cut off).
+    const music = new Map([["s1", clickMusic(100, 240)], ["s2", clickMusic(120, 200)]]);
+    const ref = (hash: string) => ({ hash, trimIn: 0, trimOut: 0, gain: 1, fadeIn: 0, fadeOut: 3 });
+    for (const songs of [[ref("s1"), ref("s2")], [ref("s1")]]) {
+      const p = project(media, { songs });
+      p.slides = plan(p, analysis, music).slides;
+      const tl = compile(p, analysis, music);
+      expect(tl.audio.length).toBeGreaterThan(0);
+      for (const ev of tl.audio) {
+        expect(ev.at + (ev.out - ev.in)).toBeLessThanOrEqual(tl.dur + 1e-6);   // nothing plays past the end
+        const full = Math.max(...ev.gain.points.map((q) => q[1]));
+        expect(gainAt(ev.gain.points, tl.dur)).toBeCloseTo(0, 6);
+        if (ev.at < tl.dur - 3) expect(gainAt(ev.gain.points, tl.dur - 1.5)).toBeLessThan(full * 0.9);   // a real fade, not a 50 ms click guard
+      }
+    }
+  });
 });
 
 describe("smooth motion", () => {
