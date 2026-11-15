@@ -30,7 +30,7 @@
     else if (e.key === "l") p?.seek((p?.time ?? 0) + 5);
     else if (e.key === "ArrowLeft") step(-1);
     else if (e.key === "ArrowRight") step(1);
-    else if (e.key === "Delete" || e.key === "Backspace") { if (app.selected.length) app.edit((pr) => { for (const s of pr.slides) if (app.selected.includes(s.id)) pr.excluded.push(...s.items); pr.slides = pr.slides.filter((s) => !app.selected.includes(s.id)); app.selected = []; }); }
+    else if (e.key === "Delete" || e.key === "Backspace") app.removeSelected();
     else if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) { e.preventDefault(); app.undoEdit(); }
     else if ((e.ctrlKey || e.metaKey) && (e.key === "Z" || (e.key === "z" && e.shiftKey) || e.key === "y")) { e.preventDefault(); app.redoEdit(); }
     else if (e.key === "L") lockSel();
@@ -73,6 +73,7 @@
         <div class="row tabs">
           <button class:on={bottom === "storyboard"} class="ghost" onclick={() => (bottom = "storyboard")}>Storyboard</button>
           <button class:on={bottom === "timeline"} class="ghost" onclick={() => (bottom = "timeline")}>Timeline</button>
+          <button class="ghost small" onclick={() => app.addTitleCard(app.project?.slides.find((s) => s.id === app.selected[0]))} title="Add a title or chapter card before the selected slide (or at the end)">+ Title card</button>
           <span class="dim small">{app.project.slides.length} slides · {app.planResult?.mismatch ? `needs ${Math.round(app.planResult.mismatch.need)} s, music ${Math.round(app.planResult.mismatch.have)} s` : ""}</span>
         </div>
         <div class="fill">

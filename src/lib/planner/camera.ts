@@ -62,9 +62,13 @@ export function seg(ts: number[], x: number): [number, number] {
 
 export interface CamState { cam: V3; f: number; ds: number; view: V3 }
 
-/** Interpolated camera at slide-relative time x in [0, 1]. */
+/** Interpolated camera at slide-relative time x in [0, 1]. Two keys ease in and out (smoothstep).
+ *  Longer tracks (sweeps, tours) use monotone cubic Hermite curves, so the camera glides through
+ *  intermediate keys instead of stopping at each one (the stop-start read as jumpy, owner 2026-11-14);
+ *  it still comes to rest at the ends and on dwell keys (repeated views), and never overshoots a key. */
 export function cameraAt(keys: CamKey[], x: number): CamState {
   if (!keys.length) return { cam: [0, 0, 0], f: 1, ds: 0, view: [0, 0, 1] };
+  if (keys.length > 2) return hermiteAt(keys, x);
   const [i, e] = seg(keys.map((k) => k.t), x);
   const a = keys[i], b = keys[Math.min(i + 1, keys.length - 1)];
   return {
@@ -73,6 +77,28 @@ export function cameraAt(keys: CamKey[], x: number): CamState {
     ds: lerp(a.ds, b.ds, e),
     view: [lerp(a.view[0], b.view[0], e), lerp(a.view[1], b.view[1], e), lerp(a.view[2], b.view[2], e)],
   };
+}
+
+const flat = (k: CamKey) => [k.cam[0], k.cam[1], k.cam[2], k.f, k.ds, k.view[0], k.view[1], k.view[2]];
+function hermiteAt(keys: CamKey[], x: number): CamState {
+  const ts = keys.map((k) => k.t), n = keys.length;
+  const P = keys.map(flat);
+  const xc = clamp(x, ts[0], ts[n - 1]);
+  let i = 0;
+  while (i < n - 2 && xc >= ts[i + 1]) i++;
+  const h = Math.max(ts[i + 1] - ts[i], 1e-6), u = (xc - ts[i]) / h;
+  // Fritsch–Carlson tangents: zero at the ends, at extrema and next to flat (dwell) segments.
+  const slope = (j: number, c: number) => (P[j + 1][c] - P[j][c]) / Math.max(ts[j + 1] - ts[j], 1e-6);
+  const tan = (j: number, c: number) => {
+    if (j === 0 || j === n - 1) return 0;
+    const s0 = slope(j - 1, c), s1 = slope(j, c);
+    if (s0 * s1 <= 0) return 0;
+    const m = (s0 + s1) / 2;
+    return Math.sign(m) * Math.min(Math.abs(m), 3 * Math.abs(s0), 3 * Math.abs(s1));
+  };
+  const h00 = 2 * u ** 3 - 3 * u ** 2 + 1, h10 = u ** 3 - 2 * u ** 2 + u, h01 = -2 * u ** 3 + 3 * u ** 2, h11 = u ** 3 - u ** 2;
+  const r = P[i].map((p0, c) => h00 * p0 + h10 * h * tan(i, c) + h01 * P[i + 1][c] + h11 * h * tan(i + 1, c));
+  return { cam: [r[0], r[1], r[2]], f: r[3], ds: r[4], view: [r[5], r[6], r[7]] };
 }
 
 /** Focus track at x: [inverse depth in focus, blur amount]. */

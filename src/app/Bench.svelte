@@ -46,7 +46,7 @@
       await fetchModel(DEPTH_MODEL);
       add("depth model download + verify", "ok", performance.now() - t0);
       const t1 = performance.now();
-      const s = await loadDepth(BASE);
+      const s = await loadDepth(BASE, false);
       add("depth session init (wasm)", `ok, threads ${crossOriginIsolated ? "on" : "off (not isolated)"}`, performance.now() - t1);
       // A synthetic scene: a bright disc "subject" on a darker gradient "room" with a floor line.
       const img = benchImage(1);

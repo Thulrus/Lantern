@@ -15,10 +15,16 @@ const NEAR_COVER = 1.1;             // views within this much of filling the scr
 const FACE_PAD = 1.35;              // headroom around faces when framing them
 const FACE_MAX = 0.6;               // a face never fills more than this share of the frame height
 const SEP_FULL = 0.18, Q_MIN = 0.35, Q_NO_SUBJECT = 0.4;
-const PUSH = 0.1, DOLLY = 0.12, ARC = 0.24, CRANE = 0.15, INFLATE = 0.14;
-const SWEEP_SPEED = 0.5;          // peak travel of sweeps and tours (panSpeed metric), screen heights per second
+// Camera travel at full amount, in image heights. Parallax between the subject and the far plane
+// is roughly travel × (1/Z_subject − 1/Z_far): with ARC = 0.09 and a subject at Z ≈ 1.4 that is
+// about 4% of the image height, a band the pull-push plate fill can carry. Larger values tore
+// the single-layer mesh (2026-11-10) and still look like cardboard with a plate.
+const PUSH = 0.1, DOLLY = 0.1, ARC = 0.09, CRANE = 0.07, INFLATE = 0.07;
+// Peak travel of sweeps and tours (panSpeed metric), screen heights per second. 0.5 read as fast and
+// jumpy on real photos (owner, 2026-11-14); zoom changes count towards it too (see panSpeed).
+const SWEEP_SPEED = 0.3;
 
-export interface DepthProbe { sep: number; pivot: number; quality: number; depthAt?: (fx: number, fy: number, fig: boolean) => number }
+export interface DepthProbe { sep: number; pivot: number; quality: number; matte?: boolean; depthAt?: (fx: number, fy: number, fig: boolean) => number }
 
 export interface MotionInput {
   w: number; h: number; aspect: number;
@@ -90,9 +96,9 @@ export function suitability(id: TreatmentId, inp: MotionInput, flags: { screensh
     case "sweep": return n >= 3 ? 0.95 : n === 2 ? 0.5 : 0;
     case "tour": return inp.pois.length >= 2 && inp.resolutionScale >= 1.4 && !flags.screenshot ? 0.8 : 0;
     case "depthPush": return clamp(sep / SEP_FULL, 0.2, 1) * (n <= 2 ? 1 : 0.6);
-    case "arc": return sep >= 0.1 ? clamp(sep / SEP_FULL, 0.3, 1) : 0;
-    case "crane": return sep >= 0.06 ? 0.6 : 0;
-    case "inflate": return sep >= 0.1 ? 0.5 : 0;
+    case "arc": return sep >= 0.1 ? clamp(sep / SEP_FULL, 0.3, 1) * (inp.depth?.matte ? 1 : 0.5) : 0;
+    case "crane": return sep >= 0.06 ? 0.6 * (inp.depth?.matte ? 1 : 0.6) : 0;
+    case "inflate": return sep >= 0.1 ? 0.5 * (inp.depth?.matte ? 1 : 0.6) : 0;
     case "dollyZoom": return sep >= 0.15 && n === 1 ? 0.4 : 0;
     case "focusPull": return n >= 1 && sep >= 0.08 ? 0.7 : 0;
   }
@@ -303,7 +309,8 @@ export function panSpeed(keys: CamKey[], dur: number): number {
   let worst = 0;
   for (let i = 1; i < keys.length; i++) {
     const a = keys[i - 1], b = keys[i], dt = Math.max((b.t - a.t) * dur, 1e-3);
-    const d = Math.hypot(b.view[0] - a.view[0], b.view[1] - a.view[1]) / ((a.view[2] + b.view[2]) / 2);
+    // Pan in screen heights, plus zoom as the log change of the view size (half the log change: a doubling counts as ~0.35).
+    const d = Math.hypot(b.view[0] - a.view[0], b.view[1] - a.view[1]) / ((a.view[2] + b.view[2]) / 2) + 0.5 * Math.abs(Math.log(b.view[2] / a.view[2]));
     worst = Math.max(worst, (d / dt) * 1.5); // smoothstep peaks at 1.5x the mean speed
   }
   return worst;

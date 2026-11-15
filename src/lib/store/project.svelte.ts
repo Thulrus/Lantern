@@ -179,6 +179,40 @@ class AppState {
     this.save();
   }
 
+  /** Remove the selected slides. Photos go to `excluded`; title cards are removed at their source so the planner does not bring them back. */
+  removeSelected(): void {
+    const ids = [...this.selected];
+    if (!ids.length || !this.project) return;
+    const titles = ids.filter((id) => id.startsWith("title-"));
+    this.edit((p) => {
+      for (const s of p.slides) if (ids.includes(s.id)) p.excluded.push(...s.items);
+      p.slides = p.slides.filter((s) => !ids.includes(s.id));
+      for (const id of titles) {
+        if (id === "title-intro") p.titles.intro = undefined;
+        else if (id === "title-end") p.titles.end = undefined;
+        else p.titles.cards = (p.titles.cards ?? []).filter((c) => "title-" + c.id !== id);
+      }
+    });
+    this.selected = [];
+  }
+
+  /** Add a title card before the given slide (or at the end) and select it. */
+  addTitleCard(before?: Slide, text = "Title"): void {
+    const id = uid("c");
+    const anchor = before?.items[0];
+    this.edit((p) => { p.titles.cards = [...(p.titles.cards ?? []), { id, text, before: anchor }]; }, undefined, { replan: true });
+    this.selected = ["title-" + id];
+  }
+
+  /** Change a title card's text at its source (intro, end or a user card). */
+  setTitleText(slideId: string, text: string): void {
+    this.edit((p) => {
+      if (slideId === "title-intro") p.titles.intro = text || undefined;
+      else if (slideId === "title-end") p.titles.end = text || undefined;
+      else { const c = p.titles.cards?.find((x) => "title-" + x.id === slideId); if (c) c.text = text; }
+    }, undefined, { replan: true });
+  }
+
   /** Keep slide starts contiguous after a duration or order change. */
   private ripple(p: Project): void {
     let t = 0;
@@ -265,3 +299,6 @@ class AppState {
 }
 
 export const app = new AppState();
+// A debug handle for tests and the console (the app is browser-only; nothing leaves the device).
+Object.assign(globalThis, { lantern: app });
+

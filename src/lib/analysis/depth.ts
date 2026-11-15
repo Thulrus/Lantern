@@ -6,7 +6,7 @@
 import * as ort from "onnxruntime-web/wasm";
 import { fetchModel } from "$lib/models/fetch";
 
-export const DEPTH_VERSION = 1;
+export const DEPTH_VERSION = 2;   // 2: layers (matte, plate, background depth) built with the map
 export const DEPTH_MODEL = "depth-anything-v2-small";
 export const DEPTH_EDGE_FULL = 518, DEPTH_EDGE_LITE = 392;
 const MAX_LONG = 826;             // 59 × 14: wide panoramas get a shorter short edge instead
@@ -15,15 +15,17 @@ const MEAN = [0.485, 0.456, 0.406], STD = [0.229, 0.224, 0.225];
 let session: ort.InferenceSession | null = null;
 let loading: Promise<ort.InferenceSession> | null = null;
 
-export async function loadDepth(base: string, onProgress?: (done: number, total: number) => void): Promise<ort.InferenceSession> {
+export async function loadDepth(base: string, threads: boolean, onProgress?: (done: number, total: number) => void): Promise<ort.InferenceSession> {
   if (session) return session;
   loading ??= (async () => {
     // Only the .wasm comes from public/vendor: the JS glue is embedded in the "bundle" build we
     // import, and naming a prefix here would make ORT import() the glue from /vendor instead,
     // which Vite's dev server refuses for files in public/.
     ort.env.wasm.wasmPaths = { wasm: base + "vendor/ort/ort-wasm-simd-threaded.wasm" };
+    // Threads need cross-origin isolation. Some builds hang in session creation with threads on
+    // (seen in headless Chromium), so the queue retries single-threaded when a job stalls.
     const isolated = typeof crossOriginIsolated !== "undefined" && crossOriginIsolated;
-    ort.env.wasm.numThreads = isolated ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
+    ort.env.wasm.numThreads = isolated && threads ? Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1)) : 1;
     ort.env.wasm.proxy = false;
     const buf = await fetchModel(DEPTH_MODEL, onProgress);
     const opts: ort.InferenceSession.SessionOptions = { executionProviders: ["wasm"], graphOptimizationLevel: "all" };
@@ -49,8 +51,9 @@ export function depthInputSize(w: number, h: number, edge: number): { w: number;
   return { w: r(w), h: r(h) };
 }
 
-/** Raw relative disparity for an image (bigger = nearer), at the model's working size. */
-export async function estimateDepth(s: ort.InferenceSession, img: ImageBitmap | OffscreenCanvas, edge: number): Promise<{ raw: Float32Array; w: number; h: number }> {
+/** Raw relative disparity for an image (bigger = nearer), at the model's working size, with the
+ *  resized photo's pixels (RGBA) at that size for the layer builder. */
+export async function estimateDepth(s: ort.InferenceSession, img: ImageBitmap | OffscreenCanvas, edge: number): Promise<{ raw: Float32Array; w: number; h: number; px: Uint8ClampedArray }> {
   const { w, h } = depthInputSize(img.width, img.height, edge);
   const c = new OffscreenCanvas(w, h), ctx = c.getContext("2d", { willReadFrequently: true })!;
   ctx.imageSmoothingQuality = "high";
@@ -67,9 +70,9 @@ export async function estimateDepth(s: ort.InferenceSession, img: ImageBitmap | 
   const t = out[s.outputNames[0]];
   const dims = t.dims, oh = dims[dims.length - 2], ow = dims[dims.length - 1];
   const raw = t.data as Float32Array;
-  if (ow === w && oh === h) return { raw: Float32Array.from(raw), w, h };
+  if (ow === w && oh === h) return { raw: Float32Array.from(raw), w, h, px };
   // Some exports return the input size, others a fixed grid: resample to the input size.
   const res = new Float32Array(n);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) res[y * w + x] = raw[Math.min(oh - 1, Math.floor((y * oh) / h)) * ow + Math.min(ow - 1, Math.floor((x * ow) / w))];
-  return { raw: res, w, h };
+  return { raw: res, w, h, px };
 }

@@ -61,7 +61,7 @@
   }
 </script>
 
-<div class="tl" bind:this={el} role="presentation" onclick={seek} onwheel={(e) => { if (e.ctrlKey) { e.preventDefault(); zoom = Math.max(10, Math.min(300, zoom * (e.deltaY < 0 ? 1.15 : 0.87))); } }}>
+<div class="tl" bind:this={el} role="presentation" onclick={seek} onwheel={(e) => { if (e.ctrlKey) { e.preventDefault(); zoom = Math.max(10, Math.min(300, zoom * (e.deltaY < 0 ? 1.15 : 0.87))); } else if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { e.preventDefault(); el.scrollLeft += e.deltaY; } }}>
   <div class="inner" style="width: {width}px">
     {#if grid}
       <div class="sections">

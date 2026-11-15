@@ -6,9 +6,35 @@ import { getFile } from "$lib/store/opfs";
 import { originalsDb } from "$lib/store/db";
 import { decodePhoto } from "$lib/media/decode";
 import type { Renderer } from "./renderer";
-import { decodeDepth, mapsImage } from "$lib/analysis/depthmath";
+import { decodeDepth, decodePlanes } from "$lib/analysis/depthmath";
+import { composeMaps } from "$lib/analysis/layers";
 
 const AHEAD = 3, BEHIND = 1;
+type Want = { hash: string; video?: boolean; maps?: boolean; plate?: boolean };
+
+/** Read depth.u16.gz, platedepth.u16.gz and (with a subject layer) matte.u8.gz + plate.webp from
+ *  OPFS and upload the maps texture "maps:<hash>" and the plate "plate:<hash>". Shared by the
+ *  preview loader and the exporter. */
+export async function loadLayerTextures(r: Renderer, hash: string, plate: boolean): Promise<void> {
+  const [dBlob, bgBlob, mBlob, pBlob] = await Promise.all([
+    getFile(hash, "depth.u16.gz"), getFile(hash, "platedepth.u16.gz"),
+    plate ? getFile(hash, "matte.u8.gz") : null, plate ? getFile(hash, "plate.webp") : null,
+  ]);
+  if (!dBlob) throw new Error("no depth file");
+  const d = await decodeDepth(dBlob);
+  const bg = bgBlob ? await decodeDepth(bgBlob) : d;
+  let matte: { tight: Uint8Array; grown: Uint8Array } | null = null;
+  if (mBlob && pBlob) {
+    const m = await decodePlanes(mBlob);
+    if (m.w === d.w && m.h === d.h && m.planes.length >= 2) matte = { tight: m.planes[0], grown: m.planes[1] };
+  }
+  if (matte && pBlob) {
+    const bmp = await createImageBitmap(pBlob, { premultiplyAlpha: "none", colorSpaceConversion: "none" });
+    r.upload("plate:" + hash, bmp, false);
+    bmp.close();
+  }
+  r.uploadMaps("maps:" + hash, composeMaps(d.u16, bg.w === d.w && bg.h === d.h ? bg.u16 : d.u16, matte, d.w, d.h), d.w, d.h);
+}
 
 export class AssetLoader {
   private loading = new Map<string, Promise<void>>();
@@ -19,11 +45,11 @@ export class AssetLoader {
 
   constructor(private r: Renderer, opts: { budget?: number } = {}) { this.budget = opts.budget ?? 24; }
 
-  private imagesOf(s: RenderSlide): { hash: string; video?: boolean; maps?: boolean }[] {
+  private imagesOf(s: RenderSlide): Want[] {
     if (s.cells) return s.cells.flatMap((c) => this.imagesOf(c.slide));
-    const out: { hash: string; video?: boolean; maps?: boolean }[] = [];
+    const out: Want[] = [];
     if (s.assets.video) out.push({ hash: s.assets.video.hash, video: true });
-    else if (s.assets.image) out.push({ hash: s.assets.image.hash, maps: !!s.assets.maps });
+    else if (s.assets.image) out.push({ hash: s.assets.image.hash, maps: !!s.assets.maps, plate: !!s.assets.plate });
     return out;
   }
 
@@ -31,16 +57,16 @@ export class AssetLoader {
   async ensure(tl: Timeline, t: number): Promise<boolean> {
     const i = tl.layers.findIndex((l) => t < l.t1);
     const idx = i < 0 ? tl.layers.length - 1 : i;
-    const wanted: { hash: string; video?: boolean; maps?: boolean }[] = [];
+    const wanted: Want[] = [];
     for (let k = Math.max(0, idx - BEHIND); k <= Math.min(tl.layers.length - 1, idx + AHEAD); k++) wanted.push(...this.imagesOf(tl.layers[k]));
     const now = tl.layers.filter((l) => t >= l.t0 && t < l.t1).flatMap((l) => this.imagesOf(l));
-    const jobs = wanted.map((w) => Promise.all([this.load(w.hash, !!w.video), w.maps ? this.loadMaps(w.hash) : undefined]));
+    const jobs = wanted.map((w) => Promise.all([this.load(w.hash, !!w.video), w.maps ? this.loadMaps(w.hash, !!w.plate) : undefined]));
     const keep = new Set(wanted.map((w) => w.hash));
     for (const k of this.r.keys()) {
       if (keep.has(k) || keep.has(k.replace(/^(v|maps):/, ""))) continue;
-      if (this.order.length > this.budget) { this.r.drop(k); this.r.drop("maps:" + k); this.order = this.order.filter((x) => x !== k); }
+      if (this.order.length > this.budget) { this.r.drop(k); this.r.drop("maps:" + k); this.r.drop("plate:" + k); this.order = this.order.filter((x) => x !== k); }
     }
-    await Promise.all(now.map((w) => Promise.all([this.load(w.hash, !!w.video), w.maps ? this.loadMaps(w.hash) : undefined])));
+    await Promise.all(now.map((w) => Promise.all([this.load(w.hash, !!w.video), w.maps ? this.loadMaps(w.hash, !!w.plate) : undefined])));
     void jobs;
     return now.every((w) => this.r.has(w.hash) || this.r.has("v:" + w.hash) || this.failed.has(w.hash));
   }
@@ -75,24 +101,13 @@ export class AssetLoader {
     return p;
   }
 
-  /** The depth maps texture for a photo, from /m/<hash>/depth.u16.gz; a missing file leaves the slide flat. */
-  loadMaps(hash: string): Promise<void> {
+  /** The maps texture (and plate) for a photo from its layer files; a missing file leaves the slide flat. */
+  loadMaps(hash: string, plate: boolean): Promise<void> {
     const key = "maps:" + hash;
     if (this.r.has(key) || this.failed.has(key)) return Promise.resolve();
     let p = this.loading.get(key);
     if (p) return p;
-    p = (async () => {
-      try {
-        const blob = await getFile(hash, "depth.u16.gz");
-        if (!blob) throw new Error("no depth file");
-        const d = await decodeDepth(blob);
-        this.r.upload(key, mapsImage(d.u16, d.w, d.h), false);
-      } catch {
-        this.failed.add(key);
-      } finally {
-        this.loading.delete(key);
-      }
-    })();
+    p = loadLayerTextures(this.r, hash, plate).catch(() => { this.failed.add(key); }).finally(() => { this.loading.delete(key); });
     this.loading.set(key, p);
     return p;
   }

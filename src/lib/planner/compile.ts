@@ -76,9 +76,12 @@ function renderSlide(s: Slide, analysis: Map<string, MediaAnalysis>, aspect: num
   base.assets.image = { hash: m.info.hash, kind: "image" };
   if (m.info.kind === "video") { base.assets.video = { hash: m.info.hash, kind: "video" }; base.clip = s.clip ? { in: s.clip.in, speed: s.clip.speed } : { in: 0, speed: 1 }; }
   if (m.depth) base.assets.maps = { hash: m.info.hash, kind: "maps" };
+  if (m.depth?.matte) base.assets.plate = { hash: m.info.hash, kind: "plate" };
   const ia = m.info.w / m.info.h;
-  const bb = bounds(base.keys, base.k ?? 0, base.aim ?? [0, 0], base.pivot ?? 0.5, border(ia, m.depth ? depthProbe(m.depth) : null));
+  const bd = border(ia, m.depth ? depthProbe(m.depth) : null);
+  const bb = bounds(base.keys, base.k ?? 0, base.aim ?? [0, 0], base.pivot ?? 0.5, bd);
   base.bounds = bb;
+  if (m.depth) base.edge = bd.bg;
   base.cover = [base.keys.some((k) => k.view[2] * aspect <= ia * 1.1), base.keys.some((k) => k.view[2] <= 1.1)];
   return base;
 }

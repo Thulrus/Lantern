@@ -1,7 +1,7 @@
 // Pass 3, group (spec §5.3): diptychs of two portraits, flipbooks, title cards.
 import type { Aspect, MediaAnalysis } from "./types";
 
-export interface GroupedItem { kind: "photo" | "video" | "pair" | "flipbook"; items: string[]; chapter: number }
+export interface GroupedItem { kind: "photo" | "video" | "pair" | "flipbook"; items: string[]; chapter: number; card?: { id: string; text: string } }
 
 const PAIR_WINDOW_MS = 30 * 60_000;
 

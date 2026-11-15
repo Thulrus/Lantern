@@ -175,3 +175,32 @@ describe("music longer than the photos", () => {
     expect(tl.audio[0].out - tl.audio[0].in).toBeCloseTo(end, 3);
   });
 });
+
+describe("smooth motion", () => {
+  it("multi-key tracks glide through keys without overshoot or jumps", async () => {
+    const { cameraAt } = await import("./camera");
+    const k = (t: number, x: number, vs = 0.5) => ({ t, view: [x, 0, vs] as [number, number, number], cam: [0, 0, 0] as [number, number, number], f: 1, ds: 0 });
+    const keys = [k(0, -0.4), k(0.3, -0.1), k(0.6, 0.2), k(0.7, 0.2), k(1, 0, 0.9)];
+    let prev = cameraAt(keys, 0).view[0], maxStep = 0;
+    for (let i = 1; i <= 1000; i++) {
+      const v = cameraAt(keys, i / 1000).view;
+      maxStep = Math.max(maxStep, Math.abs(v[0] - prev)); prev = v[0];
+      expect(v[0]).toBeGreaterThanOrEqual(-0.4 - 1e-9); expect(v[0]).toBeLessThanOrEqual(0.2 + 1e-9);
+    }
+    expect(cameraAt(keys, 0.65).view[0]).toBeCloseTo(0.2); // dwell holds
+    expect(cameraAt(keys, 1).view[2]).toBeCloseTo(0.9);
+    expect(maxStep).toBeLessThan(0.004);
+    // Through an interior key the camera keeps moving (it used to stop at every key).
+    const a = cameraAt(keys, 0.299).view[0], b = cameraAt(keys, 0.301).view[0];
+    expect(b - a).toBeGreaterThan(0.001);
+  });
+  it("beat accents keep progress continuous and monotone", async () => {
+    const { warpedProgress } = await import("$lib/render/renderer");
+    let prev = 0;
+    for (let i = 0; i <= 400; i++) {
+      const x = warpedProgress(10 + i / 100, 10, 14, [10.5, 12.5, 13.9]);
+      expect(x).toBeGreaterThanOrEqual(prev); expect(x - prev).toBeLessThan(0.01); prev = x;
+    }
+    expect(prev).toBeCloseTo(1);
+  });
+});

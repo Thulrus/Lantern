@@ -64,7 +64,10 @@ export interface Slide {
   chapter?: number;
 }
 
-export interface SongRef { hash: string; trimIn: number; trimOut: number; gain: number; fadeIn: number; fadeOut: number }
+/** A user-added title or chapter card, shown before the slide holding media `before` (none or missing: at the end). */
+export interface TitleCard { id: string; text: string; before?: string }
+
+export interface SongRef { hash: string; trimIn: number; trimOut: number; gain: number; fadeIn: number; fadeOut: number; off?: boolean /* loaded but left out of the show */ }
 
 export interface Project {
   v: 1;
@@ -79,7 +82,7 @@ export interface Project {
   songs: SongRef[];
   fit: FitMode;
   slides: Slide[];
-  titles: { intro?: string; end?: string; chapters: boolean };
+  titles: { intro?: string; end?: string; chapters: boolean; cards?: TitleCard[] };
   generativeFill: "off" | "margins" | "all";
   beatSync: "off" | "cuts" | "cuts+accents";
   depthStrength: number;          // 0..1.5, scales 3D amplitude
@@ -141,6 +144,10 @@ export interface DepthInfo {
   quality: number;                // 0..1 relief; below ~0.3 the planner stays 2D
   range: [number, number];        // raw disparity mapped to 0 and 1
   grid: number[]; gridW: number; gridH: number;
+  /** Present when the photo has a subject layer (matte.u8.gz, plate.webp, platedepth.u16.gz):
+   *  the depth threshold, the subject's share of the frame and (analyses since 2026-11-14) the
+   *  subject's bounds in source px, the focal subject when there are no faces. */
+  matte?: { tau: number; cover: number; box?: Box };
 }
 
 export interface MediaAnalysis {
@@ -193,6 +200,7 @@ export interface RenderSlide {
   aim?: [number, number]; k?: number; pivot?: number;
   bounds?: [number, number, number, number];
   cover?: [boolean, boolean];
+  edge?: number[];                // inverse depth along the border (camera.ts border() order) for the live edge clamp
   fill: number;
   enter?: { type: TransitionId; t0: number; t1: number; params?: Record<string, number> };
   cells?: { rect: [number, number, number, number]; slide: RenderSlide }[];

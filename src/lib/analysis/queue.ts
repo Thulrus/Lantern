@@ -14,6 +14,8 @@ import type { BasicsResult, DepthInfo, FaceResult, MediaAnalysis, SaliencyResult
 import AnalysisWorker from "../../workers/analysis.worker?worker";
 
 export type StageId = "basics" | "faces" | "depth";
+const DEPTH_STALL_MS = 90_000;   // a hung session never returns; a slow phone inference should still fit
+class StallError extends Error {}
 export const STAGES: { id: StageId; version: number; model: string; requires: StageId[]; priority: number }[] = [
   { id: "basics", version: BASICS_VERSION * 100 + SALIENCY_VERSION, model: "classical", requires: [], priority: 0 },
   { id: "faces", version: FACES_VERSION, model: FACES_MODEL, requires: ["basics"], priority: 1 },
@@ -35,9 +37,11 @@ export class AnalysisQueue {
   private running = new Set<string>();
   private done = new Map<string, StageStatus>();
   private jobId = 0;
-  private waiting = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; progress?: (p: number) => void }>();
+  private waiting = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; progress?: (p: number) => void; touch: () => void }>();
   private paused = false;
   private base: string;
+  /** Multi-threaded ONNX Runtime; turned off for the session after a job stalls (see `call`). */
+  private ortThreads = true;
   modelProgress = 0;
   /** Model input short edge for depth: smaller on the lite tier (spec §2.2). */
   private depthEdge = quickTier() === "lite" ? DEPTH_EDGE_LITE : DEPTH_EDGE_FULL;
@@ -49,17 +53,31 @@ export class AnalysisQueue {
     this.base = opts.base;
     const n = Math.max(1, Math.min(opts.workers ?? Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 1)), 4));
     for (let i = 0; i < n; i++) {
-      const w = new AnalysisWorker();
-      const rec: WorkerRec = { w, busy: false, resident: new Set() };
-      w.onmessage = (e: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: number }>) => {
-        const p = this.waiting.get(e.data.id);
-        if (!p) return;
-        if (e.data.progress !== undefined) { p.progress?.(e.data.progress); return; }
-        this.waiting.delete(e.data.id);
-        if (e.data.error !== undefined) p.reject(new Error(e.data.error)); else p.resolve(e.data.result);
-      };
-      this.workers.push(rec);
+      this.workers.push(this.spawn());
     }
+  }
+
+  private spawn(): WorkerRec {
+    const w = new AnalysisWorker();
+    const rec: WorkerRec = { w, busy: false, resident: new Set() };
+    w.onmessage = (e: MessageEvent<{ id: number; result?: unknown; error?: string; progress?: number }>) => {
+      const p = this.waiting.get(e.data.id);
+      if (!p) return;
+      p.touch();
+      if (e.data.progress !== undefined) { p.progress?.(e.data.progress); return; }
+      this.waiting.delete(e.data.id);
+      if (e.data.error !== undefined) p.reject(new Error(e.data.error)); else p.resolve(e.data.result);
+    };
+    return rec;
+  }
+
+  /** Replace a worker that stopped answering (a hung WASM runtime): terminate it and start a
+   *  fresh one in its place; the record keeps its identity so in-flight bookkeeping still works. */
+  private replace(rec: WorkerRec): void {
+    rec.w.terminate();
+    const fresh = this.spawn();
+    rec.w = fresh.w;
+    rec.resident = new Set();
   }
 
   onStatus(l: Listener): () => void { this.listeners.add(l); return () => this.listeners.delete(l); }
@@ -113,10 +131,27 @@ export class AnalysisQueue {
     return st.requires.every((r) => { const d = this.done.get(`${p.hash}|${r}`)?.status; return d === "ok" || d === "skipped"; });
   }
 
-  private call<T>(w: { w: Worker }, msg: Record<string, unknown>, transfer: Transferable[] = [], progress?: (p: number) => void): Promise<T> {
+  /** Post a job to a worker. With `stallMs`, a job that sends nothing (no progress, no result)
+   *  for that long is abandoned: the worker is replaced and the call rejects with StallError. */
+  private call<T>(w: WorkerRec, msg: Record<string, unknown>, transfer: Transferable[] = [], progress?: (p: number) => void, stallMs = 0): Promise<T> {
     const id = ++this.jobId;
     return new Promise<T>((resolve, reject) => {
-      this.waiting.set(id, { resolve: resolve as (v: unknown) => void, reject, progress });
+      let timer = 0;
+      const arm = () => {
+        if (!stallMs) return;
+        clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          this.waiting.delete(id);
+          this.replace(w);
+          reject(new StallError(`worker sent nothing for ${stallMs / 1000} s`));
+        }, stallMs);
+      };
+      this.waiting.set(id, {
+        resolve: (v) => { clearTimeout(timer); resolve(v as T); },
+        reject: (e) => { clearTimeout(timer); reject(e); },
+        progress, touch: arm,
+      });
+      arm();
       w.w.postMessage({ id, ...msg }, transfer);
     });
   }
@@ -142,13 +177,29 @@ export class AnalysisQueue {
         const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp"));
         if (!blob) throw new Error("no proxy to analyse");
         const prior = await loadAnalysis(p.hash);
-        const faces = (prior?.faces ?? []).filter((f) => f.score >= 0.5).map((f) => f.box);
+        const strong = (prior?.faces ?? []).filter((f) => f.score >= 0.5), weak = (prior?.faces ?? []).filter((f) => f.score >= 0.4);
+        const faces = (strong.length ? strong : weak).map((f) => f.box);
         const subject = subjectRegion(faces, (prior?.saliency?.peaks ?? []).map((x) => x.box), rec.info.w, rec.info.h);
-        const bmp = await decodePhoto(blob);
         w.resident.add("depth");
-        const r = await this.call<{ depth: Omit<DepthInfo, "available">; file: Blob; ms: number }>(w, { kind: "depth", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base, edge: this.depthEdge, subject }, [bmp], (pr) => { this.modelProgress = pr; });
+        const depthJob = async (threads: boolean) => {
+          const bmp = await decodePhoto(blob);
+          return this.call<{ depth: Omit<DepthInfo, "available">; file: Blob; bgFile: Blob; matteFile: Blob | null; plateFile: Blob | null; ms: number; layersMs: number }>(w, { kind: "depth", bitmap: bmp, srcW: rec.info.w, srcH: rec.info.h, base: this.base, edge: this.depthEdge, subject, threads }, [bmp], (pr) => { this.modelProgress = pr; }, DEPTH_STALL_MS);
+        };
+        let r: Awaited<ReturnType<typeof depthJob>>;
+        try {
+          r = await depthJob(this.ortThreads);
+        } catch (e) {
+          // A stalled runtime (multi-threaded session creation hung in headless Chromium): once
+          // more on a fresh worker, single-threaded; threads stay off for the rest of the session.
+          if (!(e instanceof StallError)) throw e;
+          this.ortThreads = false;
+          r = await depthJob(false);
+        }
         await putFile(p.hash, "depth.u16.gz", r.file);
-        result = { depth: r.depth, ms: r.ms };
+        await putFile(p.hash, "platedepth.u16.gz", r.bgFile);
+        if (r.matteFile) await putFile(p.hash, "matte.u8.gz", r.matteFile);
+        if (r.plateFile) await putFile(p.hash, "plate.webp", r.plateFile);
+        result = { depth: r.depth, ms: r.ms, layersMs: r.layersMs };
       } else {
         const blob = (await getFile(p.hash, "analysis.webp")) ?? (await getFile(p.hash, "proxy.webp"));
         if (!blob) throw new Error("no proxy to analyse");

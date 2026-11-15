@@ -1,6 +1,7 @@
 // Depth map maths with no model dependency (unit-tested in Node): normalisation of a raw
 // relative-disparity map to 16 bits, the planner's depth statistics (subject separation, pivot,
-// quality), a coarse probe grid, and the on-disk format of /m/<hash>/depth.u16.gz (spec §8.1).
+// quality), a coarse probe grid, and the on-disk formats of /m/<hash>/depth.u16.gz and
+// matte.u8.gz (spec §8.1).
 import type { Box, DepthInfo } from "$lib/planner/types";
 
 export const DEPTH_GRID = 32;
@@ -48,6 +49,7 @@ export function depthStats(u16: Uint16Array, w: number, h: number, raw: { lo: nu
       const v = u16[y * w + x] / 65535;
       if (sb && x >= sb[0] && x < sb[2] && y >= sb[1] && y < sb[3]) inside.push(v); else outside.push(v);
     }
+  if (sb && !inside.length) for (let y = Math.max(0, sb[1]); y < Math.min(h, sb[3]); y++) for (let x = Math.max(0, sb[0]); x < Math.min(w, sb[2]); x++) inside.push(u16[y * w + x] / 65535);
   const med = (a: number[]) => { if (!a.length) return 0.5; const s = Float32Array.from(a).sort(); return s[s.length >> 1]; };
   const all = med([...inside, ...outside]);
   const subjectMedian = inside.length ? med(inside) : all;
@@ -55,7 +57,13 @@ export function depthStats(u16: Uint16Array, w: number, h: number, raw: { lo: nu
   // Quality [verify]: how much relief the raw map has (coefficient of variation of the raw
   // disparity); a wall or a document comes out flat and gets no 3D treatment.
   const quality = Math.max(0, Math.min(1, raw.cv / 0.3));
-  // Probe grid: box averages, 8-bit, row-major, for the planner's border clamp.
+  const grid = probeGrid(u16, w, h);
+  return { w, h, sep, pivot: subjectMedian, quality, range: [raw.lo, raw.hi], grid, gridW: DEPTH_GRID, gridH: DEPTH_GRID };
+}
+
+/** Probe grid: box averages, 8-bit, row-major, for the planner's border clamp. Built from the
+ *  background layer's depth (the hole filled far), since that layer is what covers the frame edge. */
+export function probeGrid(u16: Uint16Array, w: number, h: number): number[] {
   const gw = DEPTH_GRID, gh = DEPTH_GRID, grid: number[] = new Array(gw * gh).fill(0);
   for (let gy = 0; gy < gh; gy++)
     for (let gx = 0; gx < gw; gx++) {
@@ -65,7 +73,7 @@ export function depthStats(u16: Uint16Array, w: number, h: number, raw: { lo: nu
       for (let y = y0; y < y1; y += 2) for (let x = x0; x < x1; x += 2) { sum += u16[y * w + x]; n++; }
       grid[gy * gw + gx] = Math.round((sum / Math.max(1, n)) / 257);
     }
-  return { w, h, sep, pivot: subjectMedian, quality, range: [raw.lo, raw.hi], grid, gridW: gw, gridH: gh };
+  return grid;
 }
 
 /** Coefficient of variation of the raw disparity, the relief measure behind `quality`. */
@@ -105,10 +113,26 @@ export async function decodeDepth(blob: Blob): Promise<{ w: number; h: number; u
   return { w, h, u16: new Uint16Array(buf.slice(8)) };
 }
 
-/** The renderer's maps texture (spec §9.1): R and G carry the depth (one layer until mattes
- *  exist), B and A the subject alpha (none yet, so the subject layer is empty). */
-export function mapsImage(u16: Uint16Array, w: number, h: number): ImageData {
-  const px = new Uint8ClampedArray(w * h * 4);
-  for (let i = 0, j = 0; i < u16.length; i++, j += 4) { const d = u16[i] >> 8; px[j] = d; px[j + 1] = d; px[j + 2] = 0; px[j + 3] = 0; }
-  return new ImageData(px, w, h);
+const MAGIC_PLANES = 0x4c4d5431; // "LMT1": u32 magic, u16 width, u16 height, then k planes of u8 samples.
+
+/** Serialise 8-bit planes (the subject mattes) as gzip(header + planes). */
+export async function encodePlanes(planes: Uint8Array[], w: number, h: number): Promise<Blob> {
+  const head = new DataView(new ArrayBuffer(8));
+  head.setUint32(0, MAGIC_PLANES, true); head.setUint16(4, w, true); head.setUint16(6, h, true);
+  const body = new Uint8Array(8 + planes.length * w * h);
+  body.set(new Uint8Array(head.buffer), 0);
+  planes.forEach((pl, i) => body.set(pl, 8 + i * w * h));
+  const gz = new Blob([body]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Response(gz).blob();
+}
+
+export async function decodePlanes(blob: Blob): Promise<{ w: number; h: number; planes: Uint8Array[] }> {
+  const buf = await new Response(blob.stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+  const dv = new DataView(buf);
+  if (buf.byteLength < 8 || dv.getUint32(0, true) !== MAGIC_PLANES) throw new Error("not a Lantern matte file");
+  const w = dv.getUint16(4, true), h = dv.getUint16(6, true), n = w * h;
+  if (!n || (buf.byteLength - 8) % n) throw new Error("matte file size mismatch");
+  const planes: Uint8Array[] = [];
+  for (let o = 8; o < buf.byteLength; o += n) planes.push(new Uint8Array(buf.slice(o, o + n)));
+  return { w, h, planes };
 }

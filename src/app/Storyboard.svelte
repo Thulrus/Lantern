@@ -30,10 +30,12 @@
     });
     dragId = null; overId = null;
   }
+  // The board scrolls sideways: map a vertical wheel to horizontal scroll.
+  function hwheel(e: WheelEvent) { const el = e.currentTarget as HTMLElement; if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) { el.scrollLeft += e.deltaY; e.preventDefault(); } }
   const dot = (hash: string, stage: string) => { const st = app.stageStatus.get(`${hash}|${stage}`); return st === "ok" || st === "skipped" ? "ok" : st === "error" ? "err" : st ? "run" : ""; };
 </script>
 
-<div class="board" role="list">
+<div class="board" role="list" onwheel={hwheel}>
   {#each slides as s, i (s.id)}
     <div role="button" class="card" class:on={app.selected.includes(s.id)} class:over={overId === s.id} class:title={s.kind === "title"} class:current={app.playhead >= s.start && app.playhead < s.start + s.dur}
       draggable="true" ondragstart={() => (dragId = s.id)} ondragover={(e) => { e.preventDefault(); overId = s.id; }} ondragleave={() => (overId = null)} ondrop={() => drop(s)}

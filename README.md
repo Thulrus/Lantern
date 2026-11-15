@@ -20,8 +20,9 @@ static web page; all analysis, rendering and video encoding runs locally in your
 Try it [on GitHub Pages](https://thulrus.github.io/Lantern/).
 
 > **Status:** early development. The first vertical slice works: import photos and songs, the
-> automatic 2D director with beat-synced cuts, the editor and MP4 export. Depth Space (3D),
-> generative fills and video clips are next. See [`lantern-spec.md`](lantern-spec.md) for the plan
+> automatic director with beat-synced cuts, 3D moves on depth-layered photos (subject and
+> background, no upload), depth-aware transitions, the editor and MP4 export. Generative fills
+> and video clips are next. See [`lantern-spec.md`](lantern-spec.md) for the plan
 > and [`docs/HANDOFF.md`](docs/HANDOFF.md) for progress.
 
 ## Browser support (planned)

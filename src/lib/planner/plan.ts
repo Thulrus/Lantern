@@ -70,11 +70,15 @@ export function plan(project: Project, analysis: Map<string, MediaAnalysis>, mus
   const chapterStarts = new Set<number>();
   if (project.titles.intro) units.push({ kind: "photo", items: [], chapter: -1 });
   let lastCh = -1;
+  const cards = project.titles.cards ?? [];
+  const placed = new Set<string>();
   for (const g of grouped) {
+    for (const c of cards) if (c.before && g.items.includes(c.before) && !placed.has(c.id)) { placed.add(c.id); units.push({ kind: "photo", items: [], chapter: -3, card: c }); }
     if (project.titles.chapters && g.chapter !== lastCh && lastCh !== -1) chapterStarts.add(units.length);
     lastCh = g.chapter;
     units.push(g);
   }
+  for (const c of cards) if (!placed.has(c.id)) units.push({ kind: "photo", items: [], chapter: -3, card: c });
   if (project.titles.end) units.push({ kind: "photo", items: [], chapter: -2 });
   if (!units.length) return { slides: [], warnings: ["No photos to show."], suggestedOut: cur.suggestedOut, alternates: cur.alternates, duration: 0 };
 
@@ -121,7 +125,7 @@ export function plan(project: Project, analysis: Map<string, MediaAnalysis>, mus
   const desired: number[] = [], durReasons: string[][] = [];
   units.forEach((u, i) => {
     const old = prior.get(slideIds[i]);
-    if (u.items.length === 0) { const text = u.chapter === -1 ? project.titles.intro! : project.titles.end!; desired.push(titleDur(text)); durReasons.push(["title"]); return; }
+    if (u.items.length === 0) { const text = titleText(u, project); desired.push(titleDur(text)); durReasons.push(["title"]); return; }
     const m = analysis.get(u.items[0])!;
     const faces = (m.faces ?? []).filter((f) => f.score >= 0.5).length;
     const screenshot = !!m.basics?.flags.includes("screenshot") || (m.tags?.screenshot ?? 0) > 0.5;
@@ -211,7 +215,7 @@ export function plan(project: Project, analysis: Map<string, MediaAnalysis>, mus
     const slide: Slide = {
       id, kind: isTitle ? "title" : u.kind, items: u.items, start, dur, treatment, fill,
       transitionIn: { type: tr.type, dur: trDur },
-      caption: keepLocks && old?.locks.caption ? old.caption : isTitle ? { text: u.chapter === -1 ? project.titles.intro! : project.titles.end!, position: "center", style: "title" } : chapterStarts.has(i) && project.titles.chapters ? { text: chapterText(m), position: "bottom", style: "chapter", from: 0, to: Math.min(dur, 3.5) } : undefined,
+      caption: keepLocks && old?.locks.caption ? old.caption : isTitle ? { text: titleText(u, project), position: "center", style: "title" } : chapterStarts.has(i) && project.titles.chapters ? { text: chapterText(m), position: "bottom", style: "chapter", from: 0, to: Math.min(dur, 3.5) } : undefined,
       clip: u.kind === "video" && m?.info.duration ? clipPick(m, dur) : undefined,
       locks: keepLocks && old ? { ...old.locks } : {},
       auto: { reasons, alternates, quality: m?.depth ? "full" : "draft" },
@@ -225,16 +229,20 @@ export function plan(project: Project, analysis: Map<string, MediaAnalysis>, mus
 }
 
 export function slideId(u: GroupedItem, i: number): string {
-  if (!u.items.length) return u.chapter === -1 ? "title-intro" : "title-end";
+  if (!u.items.length) return u.card ? "title-" + u.card.id : u.chapter === -1 ? "title-intro" : "title-end";
   return "s" + hash32(u.items.join("+")).toString(16) + (u.kind === "pair" ? "p" : "");
 }
 
 export function motionInput(m: MediaAnalysis, aspect: number, outHeight: number, style: Style, dur: number): MotionInput {
   const faces = (m.faces ?? []).filter((f) => f.score >= 0.5).map((f) => f.box).sort((a, b) => boxArea(b) - boxArea(a));
-  const peaks = (m.saliency?.peaks ?? []).map((p) => p.box);
+  // Focal tiers when there are no faces: the depth matte's subject, then saliency peaks ranked by
+  // strength × size (a lone high-contrast speck should not steer the camera).
+  const peaks = [...(m.saliency?.peaks ?? [])].sort((a, b) => b.score * Math.sqrt(boxArea(b.box)) - a.score * Math.sqrt(boxArea(a.box))).map((p) => p.box);
+  const mb = m.depth?.matte?.box;
+  if (mb && !faces.length && boxArea(mb) < 0.6 * m.info.w * m.info.h) peaks.unshift(mb);
   return {
     w: m.info.w, h: m.info.h, aspect, faces, pois: pointsOfInterest(faces, peaks),
-    depth: m.depth ? { sep: m.depth.sep, pivot: m.depth.pivot, quality: m.depth.quality, depthAt: depthProbe(m.depth) } : undefined,
+    depth: m.depth ? { sep: m.depth.sep, pivot: m.depth.pivot, quality: m.depth.quality, matte: !!m.depth.matte, depthAt: depthProbe(m.depth) } : undefined,
     dur, panSpeed: style.panSpeed, resolutionScale: m.info.h / outHeight,
   };
 }
@@ -249,6 +257,7 @@ function explain(id: TreatmentId, inp: MotionInput, m: MediaAnalysis): string[] 
   return [`${who}${shape ? `, ${shape}` : ""} → ${id}${m.basics?.flags.includes("screenshot") ? " (readable)" : ""}`];
 }
 
+const titleText = (u: GroupedItem, p: Project) => u.card ? u.card.text : (u.chapter === -1 ? p.titles.intro : p.titles.end) ?? "";
 const titleDur = (text: string) => clamp(2 + 0.06 * text.length, 2.5, 6);
 
 function chapterText(m: MediaAnalysis | undefined): string {

@@ -28,6 +28,7 @@
       p.onTime = (t) => { app.playhead = t; app.playing = p.playing; };
       p.onEnd = () => { app.playing = false; };
       player = p;
+      Object.assign(globalThis, { lanternPlayer: p }); // debug handle for tests
       const ro = new ResizeObserver(() => p.resize());
       ro.observe(wrap);
       p.resize();

@@ -9,6 +9,7 @@ import { getFile } from "$lib/store/opfs";
 import { originalsDb } from "$lib/store/db";
 import { decodePhoto } from "$lib/media/decode";
 import { Renderer } from "$lib/render/renderer";
+import { loadLayerTextures } from "$lib/render/assets";
 import { decodeAudio } from "$lib/media/import";
 
 export interface ExportOptions {
@@ -134,6 +135,7 @@ export async function exportVideo(tl: Timeline, opts: ExportOptions, onProgress:
         const bmp = await loadImage(h, !!opts.useOriginals);
         if (bmp) { renderer.upload(h, bmp, true); bmp.close(); }
         loaded.set(h, !!bmp);
+        if (l.assets.maps) await loadLayerTextures(renderer, h, !!l.assets.plate).catch(() => {});
       }
       const vh = l.assets.video?.hash;
       if (vh) {
@@ -145,7 +147,10 @@ export async function exportVideo(tl: Timeline, opts: ExportOptions, onProgress:
       }
     }
     // Free textures of slides well behind the playhead.
-    for (const k of renderer.keys()) if (!want.some((l) => l.assets.image?.hash === k || "v:" + l.assets.video?.hash === k) && !k.startsWith("maps:")) { renderer.drop(k); loaded.delete(k); }
+    for (const k of renderer.keys()) {
+      const base = k.replace(/^(v|maps|plate):/, "");
+      if (!want.some((l) => l.assets.image?.hash === base || l.assets.video?.hash === base)) { renderer.drop(k); loaded.delete(k); }
+    }
   };
 
   const started = performance.now();

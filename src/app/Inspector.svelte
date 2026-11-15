@@ -13,7 +13,9 @@
   const media = $derived(slide && slide.items[0] ? app.analysis.get(slide.items[0]) : null);
   const style = $derived(app.style);
   let framing = $state(false);
-  $effect(() => { if (slide) tab = "slide"; });
+  // Switch to the slide tab only when the selection itself changes, not on every edit (edits rebuild the slide objects).
+  let lastSel = "";
+  $effect(() => { const id = app.selected[0] ?? ""; if (id && id !== lastSel) tab = "slide"; lastSel = id; });
 
   const lock = (field: LockField) => (slide?.locks[field] ? "on" : "");
   function set(fn: (s: Slide) => void, fields: LockField[]) {
@@ -76,7 +78,7 @@
       </div>
       <div class="field">
         <span class="lbl">Caption <button class="lock {lock('caption')}" onclick={() => app.unlock(slide.id, "caption")} title="Unlock">🔒</button></span>
-        <input value={slide.caption?.text ?? ""} placeholder="Text shown on this slide" onchange={(e) => { const text = (e.currentTarget as HTMLInputElement).value; set((s) => { s.caption = text ? { ...(s.caption ?? { position: "bottom", style: s.kind === "title" ? "title" : "plain" }), text } : undefined; }, ["caption"]); }} />
+        <input value={slide.caption?.text ?? ""} placeholder="Text shown on this slide" onchange={(e) => { if (slide.kind === "title") { app.setTitleText(slide.id, (e.currentTarget as HTMLInputElement).value); return; } const text = (e.currentTarget as HTMLInputElement).value; set((s) => { s.caption = text ? { ...(s.caption ?? { position: "bottom", style: s.kind === "title" ? "title" : "plain" }), text } : undefined; }, ["caption"]); }} />
         {#if slide.caption?.text && slide.kind !== "title"}
           <Seg label="" options={[{ v: "top", label: "Top" }, { v: "center", label: "Centre" }, { v: "bottom", label: "Bottom" }] as const} value={slide.caption.position} onchange={(v) => set((s) => { if (s.caption) s.caption.position = v; }, ["caption"])} />
         {/if}
@@ -90,7 +92,7 @@
       {/if}
       <div class="row">
         <button class="small" onclick={() => app.edit((p) => { p.starred = p.starred.includes(slide.items[0]) ? p.starred.filter((h) => h !== slide.items[0]) : [...p.starred, slide.items[0]]; })} disabled={slide.kind === "title"}>{app.project?.starred.includes(slide.items[0]) ? "★ Starred" : "☆ Star"}</button>
-        <button class="small danger" onclick={() => app.edit((p) => { p.slides = p.slides.filter((s) => !app.selected.includes(s.id)); for (const s of app.project!.slides) if (app.selected.includes(s.id)) p.excluded.push(...s.items); app.selected = []; })}>Remove</button>
+        <button class="small danger" onclick={() => app.removeSelected()}>Remove</button>
       </div>
       <details>
         <summary class="dim small">Why? ({slide.auto.reasons.length})</summary>
@@ -111,6 +113,7 @@
     <Seg label="Music fit" options={[{ v: "show-to-music", label: "Show to music", help: "The show ends with the music." }, { v: "music-to-show", label: "Music to show", help: "Durations as planned; music fades at the end." }, { v: "free", label: "Free" }] as const} value={app.project.fit} onchange={(v) => app.edit((p) => { p.fit = v; }, undefined, { replan: true })} />
     <Seg label="Beat sync" options={[{ v: "off", label: "Off" }, { v: "cuts", label: "Cuts" }, { v: "cuts+accents", label: "Cuts + accents" }] as const} value={style.beatSync} onchange={(v) => app.edit((p) => { p.styleOverrides.beatSync = v; }, undefined, { replan: true })} />
     <div class="field"><span class="lbl">Titles</span>
+      <span class="dim small">Add more cards with "+ Title card" under the preview; remove one like any slide.</span>
       <input placeholder="Opening title" value={app.project.titles.intro ?? ""} onchange={(e) => app.edit((p) => { p.titles.intro = (e.currentTarget as HTMLInputElement).value || undefined; }, undefined, { replan: true })} />
       <input placeholder="Closing title" value={app.project.titles.end ?? ""} onchange={(e) => app.edit((p) => { p.titles.end = (e.currentTarget as HTMLInputElement).value || undefined; }, undefined, { replan: true })} />
       <Toggle label="Chapter cards" help="A date card where the capture time jumps" on={app.project.titles.chapters} onchange={(v) => app.edit((p) => { p.titles.chapters = v; }, undefined, { replan: true })} />
@@ -129,11 +132,16 @@
     <button onclick={() => app.replan({ newSeed: true })}>Re-roll (new seed, locks kept)</button>
     {#if app.planResult?.warnings.length}<div class="warn">{#each app.planResult.warnings as w}<div>{w}</div>{/each}</div>{/if}
   {:else if tab === "music" && app.project}
+    {#if app.planResult?.mismatch}
+      {@const mm = app.planResult.mismatch}
+      <p class="warn small">{mm.have < mm.need ? `The music (${fmtClock(mm.have)}) is shorter than the photos need (${fmtClock(mm.need)}): add a song, or the slides get shorter.` : `The music (${fmtClock(mm.have)}) is longer than the photos need (${fmtClock(mm.need)}): it fades early, or add photos.`}</p>
+    {/if}
     {#each app.project.songs as song, i (song.hash)}
       {@const a = app.music.get(song.hash)}
       {@const info = app.songs.get(song.hash)}
-      <div class="card col">
-        <strong>{info?.info.name ?? song.hash}</strong>
+      <div class="card col" class:off={song.off}>
+        <div class="row"><strong>{info?.info.name ?? song.hash}</strong>
+          <Toggle label="Use in show" on={!song.off} onchange={(v) => app.edit((p) => { p.songs[i].off = !v || undefined; }, undefined, { replan: true })} /></div>
         {#if a}
           <span class="dim small">{fmtClock(a.duration)} · {Math.round(a.tempo)} BPM ({a.beatsPerBar}/4) · {a.sections.length} sections · loudness {a.loudness.toFixed(0)} dB</span>
           <div class="row"><span class="dim small">Tempo</span>
@@ -148,6 +156,7 @@
         <div class="row"><span class="dim small">Fade out</span><input type="range" min="0" max="10" step="0.5" value={song.fadeOut} onchange={(e) => app.edit((p) => { p.songs[i].fadeOut = Number((e.currentTarget as HTMLInputElement).value); })} /><span class="val">{song.fadeOut} s</span></div>
         <div class="row">
           {#if i > 0}<button class="small" onclick={() => app.edit((p) => { [p.songs[i - 1], p.songs[i]] = [p.songs[i], p.songs[i - 1]]; }, undefined, { replan: true })}>↑</button>{/if}
+          {#if i < app.project.songs.length - 1}<button class="small" onclick={() => app.edit((p) => { [p.songs[i + 1], p.songs[i]] = [p.songs[i], p.songs[i + 1]]; }, undefined, { replan: true })}>↓</button>{/if}
           <button class="small danger" onclick={() => app.edit((p) => { p.songs.splice(i, 1); }, undefined, { replan: true })}>Remove</button>
         </div>
       </div>
@@ -164,5 +173,6 @@
   .val { font-size: 12px; color: var(--dim); min-width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
   .row input[type="range"] { flex: 1; width: auto; }
   .warn { color: var(--accent); font-size: 13px; }
+  .card.off { opacity: 0.55; }
   ul { margin: 4px 0 0; padding-left: 18px; }
 </style>

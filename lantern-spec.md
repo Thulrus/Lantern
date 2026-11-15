@@ -212,8 +212,8 @@ it needs.
 | **Embedding** | CLIP image embedding; zero-shot tags (below) | all | every item |
 | **Saliency** | a saliency map, or its peak boxes, for pictures without people | all | every photo |
 | **Pose** | person boxes and body keypoints (used for framing so moves don't cut at joints, for aim points, and for burst stabilization) | standard+ | photos with people |
-| **Matte** | soft subject matte: people, or the salient subject (a pet, a statue) | standard+ (lite: a person-only segmenter) | photos in the show |
-| **Depth** | relative inverse depth, 16-bit | all (lite: small input size) | photos in the show |
+| **Matte** | soft subject matte: people, or the salient subject (a pet, a statue). Built 2026-11-11 **from the depth map alone** (a soft depth threshold between the subject's depth and its surroundings, see §4.6), inside the depth stage, on every tier. A segmentation model (BiRefNet-lite on the full tier) can refine it later. | all | photos in the show |
+| **Depth** | relative inverse depth, 16-bit; plus the layers (matte, background plate, background depth) | all (lite: small input size) | photos in the show |
 | **Plate** | background with the subject removed (only inside the grown matte), its depth, and margins outpainted past the frame on sides the subject does not touch; person-guard verdict | full | slides whose plan needs it |
 | **Video scan** | per sampled frame (2 fps): faces, motion energy, shake, sharpness; audio RMS and speech probability (VAD) | standard+ | every video |
 | **Music** | §6 | all | every song |
@@ -290,6 +290,16 @@ the main subject":
 
 - **Hole** = the matte (> 0.1), grown by 1.2% of the long edge, plus padding. Only hole pixels
   change, so at rest a slide composites back to the exact photo.
+- **Built so far (2026-11-11, `src/lib/analysis/layers.ts`)**: the no-model path. The matte is
+  the near side of a soft depth threshold placed in the valley of the depth histogram between the
+  subject box's median and the background's (Otsu's split when no face or saliency box gives a
+  usable separation, so pets and statues get a layer too). The hole is the matte grown by 0.8% of
+  the long edge; the plate fills it by a classical pull-push pyramid (colour and depth together), so
+  the far layer has a smooth surface and rim colours behind the subject. The grown alpha covers the
+  hole exactly and feathers 1.5% outward. Layers are skipped when the separation is under 0.06 or
+  the subject covers less than 0.4% or more than 72% of the frame. The pull-push fill is a blur of
+  the rim: a wide parallax shows it as a soft band around the subject, which is why 3D amplitudes
+  stay moderate until an inpainting model lands (M6).
 - Fill a square crop around the hole at the model's native size. Where the square runs past
   the frame, mirror the context *and the mask* (Flicker found that a mirrored subject leaked
   into the context otherwise).
@@ -552,7 +562,9 @@ tempos and section changes (timbre switch) are the automated tests.
   treatment weights (high energy: pushes, whips; low: slow drifts, orbits, focus pulls).
 - **Motion lands on the beat**: a move's ease-out completes on a downbeat, where the slide
   lasts long enough for that.
-- **Accents** (`cuts+accents` only): a 2–3% zoom pulse on strong downbeats, a whip on a drop, an
+- **Accents** (`cuts+accents` only): the current move surges smoothly for ~0.6 s after strong
+  downbeats (a time warp of the move's progress, never a jump; the earlier 2–3% zoom pulse was
+  removed as jumpy, owner 2026-11-14), a whip on a drop, an
   Inflate at the first beat of a high section.
 - **The ending**: the last slide holds through the final note; the fade to black follows the
   song's fade.
@@ -600,14 +612,19 @@ IndexedDB "lantern"
   people     { id, name?, faceIds[], cover }
   songs      { hash, name, duration, analysis }
 OPFS
-  /m/<hash>/thumb.webp  proxy.webp  depth.u16.gz  matte.u8.gz  plate.webp  platedepth.u16.gz  plate.json
+  /m/<hash>/thumb.webp  proxy.webp  analysis.webp  depth.u16.gz  platedepth.u16.gz  matte.u8.gz  plate.webp  plate.json
   /exports/<id>.mp4     (browsers without a save picker)
 ```
 
 Canvas cannot encode 16-bit PNG, so depth is stored as raw `Uint16Array`, gzipped with
 `CompressionStream`: an 8-byte header (`LDP1` magic, u16 width, u16 height, little-endian) then
-row-major samples, inverse depth with 65535 = nearest. The analysis record keeps the planner's
-summary (separation, pivot, quality, a 32 × 32 probe grid) so planning never reads the file. Request persistent storage (`navigator.storage.persist()`) and show usage
+row-major samples, inverse depth with 65535 = nearest. `platedepth.u16.gz` uses the same format
+for the background layer's depth (the hole behind the subject filled, then smoothed). `matte.u8.gz`
+is `LMT1` + u16 width + u16 height, then two 8-bit planes: the tight alpha and the grown alpha.
+`plate.webp` is the photo at map size with the hole filled, its alpha = hole coverage; the renderer
+blends it over the photo only there. The analysis record keeps the planner's summary (separation,
+pivot, quality, a 32 × 32 probe grid of the background depth, and the matte's threshold and
+cover) so planning never reads the files. Request persistent storage (`navigator.storage.persist()`) and show usage
 and quota in Settings, with "Clear analysis cache" per project and globally.
 
 **Project files**: export and import a `.lantern` package (a zip): the project JSON, optionally
@@ -704,7 +721,14 @@ one-off parity script, not a shipped test.
 ### 9.2 Layers and drawing
 
 - Two depth-displaced grid meshes per slide (subject and background), 128 × 128 on desktop, 64
-  × 64 on lite. This is Flicker's `stills.ts`.
+  × 64 on lite. This is Flicker's `stills.ts`. Built 2026-11-11: the maps texture is RGBA
+  half-float (R background depth, G subject depth, B grown alpha, A tight alpha); the subject's
+  depth is extended past its matte by pull-push and lightly smoothed so the subject mesh never
+  stretches across its own silhouette (a mesh that dropped to the far depth outside the matte
+  drew a sawtooth there), and the background depth is the filled plate depth, so neither mesh
+  tears at the subject's edge. Slides render into 4× multisampled targets with a second colour
+  attachment holding screen-space depth, which the composite pass reads for depth-aware
+  transitions.
 - Subject alpha = matte grown and feathered, so a still frame equals the photo exactly. It
   blends to the tight matte as the camera moves away from rest (Flicker: 0.015–0.065), which
   removes the halo of background carried on the subject.
@@ -714,7 +738,9 @@ one-off parity script, not a shipped test.
   build the few-tap disc blur (Flicker spec §5.2.1 item 9) from the start.
 - Letterbox fill: a blurred, darkened copy of the slide (Flicker `gl.ts`).
 - Transitions render both slides into offscreen framebuffers and combine them in a transition
-  shader, except depth-aware ones (depth wipe, fly-through, scan) that need both slides' depth.
+  shader; depth wipe and fly-through read the depth attachments (built 2026-11-11: the wipe
+  reveals the incoming slide far plane first and subject last; the fly-through zooms the outgoing
+  slide in while its planes dissolve nearest first).
 - Captions and titles: text drawn with Canvas 2D into textures, composited last. Fonts are
   bundled (OFL-licensed), never fetched at runtime.
 - Performance: 60 fps preview on Full tier; never below 30 on Standard. Preload a window of
@@ -866,7 +892,7 @@ Each milestone ends with something a person can try on the deployed Pages site.
 | **M2** | **Music** | Song import, analysis, editor display and correction; music fit (pass 5); several songs with crossfades; mix in preview. |
 | **M3** | **Editor** | Storyboard, timeline, inspector, framing editor, locks, alternates, re-roll, undo, autosave, project packages. |
 | **M4** | **Export** | The export pipeline, codec fallbacks, progress, golden-frame and sync tests. |
-| **M5** | **Depth Space** | Depth and matte stages, two-layer meshes, depth treatments, depth wipe, fly-through, disc DOF, upgrade-in-place. Depth stage, single-layer mesh displacement, depth treatments and upgrade-in-place built 2026-11-10; mattes, two layers, depth transitions and disc DOF remain. |
+| **M5** | **Depth Space** | Depth and matte stages, two-layer meshes, depth treatments, depth wipe, fly-through, disc DOF, upgrade-in-place. Depth stage, single-layer mesh displacement, depth treatments and upgrade-in-place built 2026-11-10; depth-derived mattes, pull-push plates, two-layer meshes, multisampled targets, depth wipe and fly-through built 2026-11-11. Remaining: disc DOF (mip-bias blur is used), a segmentation model for finer mattes, WebGPU provider, GPU timings. |
 | **M6** | **Fills** | Plates, margins, person guard, Extend fill, pairs and grids, "show generated pixels". |
 | **M7** | **Video** | Video scan, highlight picking, clip slides, ducking, frame-accurate export decode. |
 | **M8** | **Polish** | People and featured person, chapters and titles, all style presets, flipbooks, PWA offline, mobile layout, accessibility pass. |
@@ -883,7 +909,8 @@ list stays open.
 | Beat tracking | Classical DSP (log-mel flux → tempogram → Ellis DP → downbeat phase → Foote sections) on a 128 BPM click track: tempo within 0.4 %, > 85 % of beats within 20 ms after calibrating the onset frame to the window tail, section boundary within one bar of a timbre change. 60 s of audio analyses in well under a second in a worker. Real-song accuracy (§6.2 targets) is **not yet measured**. Real song (2026-11-10, after the long-song fix): a 4-minute MP3 excerpt analysed in about 2 s in headless Chromium (84 BPM; accuracy still unmeasured against annotations); a 30-minute synthetic track in 7 s with under 30 MB extra memory. |
 | Renderer | Single WebGL2 path for preview and export (`src/lib/render/renderer.ts`): depth-displaced mesh with a flat stand-in map, letterbox fill, crossfade / dip / push / whip in a composite pass, captions. 13–23 fps on SwiftShader at 1080p-class canvas; needs measuring on a GPU. |
 | Export | WebCodecs via Mediabunny: a 24 s 1080p30 show → MP4 (H.264 + Opus, 17 MB) in 82 s on software encode; ffprobe reports 720 frames, 24.000 s, both streams present. AAC was not available in headless Chromium (Opus in MP4 was chosen automatically). Save picker streaming works in Chromium; a download fallback exists. **Not yet tested:** QuickTime/VLC/phone playback, A/V sync measurement, Firefox and Safari. |
-| Depth | Depth Anything V2 Small, 8-bit ONNX (27 MB, SHA-256 pinned), on ONNX Runtime Web's WASM provider with threads, bundled into the classic analysis worker (`onnxruntime-web/wasm`, no dynamic import). Headless Chromium on the CPU: session init 1 s, 3.3–4.2 s per photo at 770 × 518, 23 of 23 test photos analysed, 2.7 s on the bench after warm-up. Maps are 8-bit in the renderer's texture (RG = depth, no matte yet). The `quality` relief measure saturates at 1.0 on every real test photo and gives 0.43 on a synthetic gradient scene: it separates flat documents from scenes but is **[verify]** as a 3D-worthiness gate. WebGPU provider not tried yet. |
+| Depth | Depth Anything V2 Small, 8-bit ONNX (27 MB, SHA-256 pinned), on ONNX Runtime Web's WASM provider, bundled into the classic analysis worker (`onnxruntime-web/wasm`, no dynamic import). Headless Chromium on the CPU: session init 0.6 s, about 5 s per photo at 770 × 518 single-threaded, 24 of 24 test photos analysed. **Threads (2026-11-11):** with cross-origin isolation on, session creation hung forever in headless Chromium 158 (never returned, no error); the queue now has a 90 s stall watchdog that terminates the worker and retries single-threaded, and turns threads off for the rest of the session. Whether threads work in real browsers is **[verify]**. Maps are half-float in the renderer's texture. The `quality` relief measure saturates at 1.0 on every real test photo and gives 0.43 on a synthetic gradient scene: it separates flat documents from scenes but is **[verify]** as a 3D-worthiness gate. WebGPU provider not tried yet. |
+| Layers | Depth-derived mattes (§4.6) on the 24 test photos: every photo got a subject layer (8 of 8 inspected looked right: wolf, dogs, single portraits, groups; the separation measured on the matte was 0.5–0.76). Layer building adds well under a second per photo to the depth job. Frame dumps (`tests/e2e/frames.spec.ts`, `test-results/frames/`) show clean silhouettes under arcs and depth pushes; the visible costs are the blurred pull-push fill in the parallax band around subjects and a gentle warp where two people at different depths share the subject layer. |
 | Pages isolation | The service worker (`public/sw.js`) adds COOP/COEP (`credentialless`) and caches the app shell; the app reloads once after first activation. The WASM path is single-threaded without it. **Not yet verified on the deployed site** (nothing is deployed yet). |
 | OPFS and IndexedDB | Proxies (2560 px), analysis images (1024 px) and thumbnails (320 px) in OPFS, records and analysis in IndexedDB, originals kept in IndexedDB when no directory handle exists. Import of 23 photos plus a song and the full plan completes in about 10 s in the headless run. |
 

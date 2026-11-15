@@ -34,7 +34,7 @@ export const STYLES: Style[] = [
     pace: { base: 4.0, min: 1.8, max: 9 },
     treatmentWeights: { hold: 0.5, push: 2, pull: 1, pan: 1.5, sweep: 3, tour: 1.5, depthPush: 3, arc: 3, crane: 2, inflate: 1.5, dollyZoom: 0.5, focusPull: 1.5 },
     transitionWeights: { minor: { crossfade: 2, cut: 1, depthWipe: 2 }, major: { dipBlack: 2, flyThrough: 2, whip: 0.5 } },
-    depthShare: 0.7, depthAmount: 1.2, generativeFill: "margins", beatSync: "cuts+accents",
+    depthShare: 0.7, depthAmount: 1, generativeFill: "margins", beatSync: "cuts+accents",
   },
   {
     ...base, id: "upbeat", name: "Upbeat", blurb: "Short beats, cuts on beats, whips and pushes, grid reveals.",

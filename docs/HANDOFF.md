@@ -1,10 +1,97 @@
 # Lantern: development status and handoff
 
-Status as of 2026-11-10 (third session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed and the depth stage (M5 start) running.** Import
+Status as of 2026-11-14 (fifth session): **a working vertical slice, deployed on GitHub Pages, with music fixed, creative looks removed, and Depth Space (M5) mostly built: depth, derived mattes and plates, two-layer meshes, depth wipe and fly-through.** Import
 photos and songs, get an automatically planned 2D show with beat-synced cuts, edit it in the
 editor, export an MP4. All of it was exercised end to end in headless Chromium by the Playwright
 test (`tests/e2e/show.spec.ts`) against the owner's local `example_photos/` folder. The owner
 has committed ("Basics working") and deployed to GitHub Pages.
+
+## Session 5 (2026-11-14): owner's observations (`Observations.md`)
+
+Done (unit tests 31/31, `npm run check` clean, `show.spec.ts` e2e passes; not yet eyeballed on a GPU):
+
+- **Beat accents** no longer jolt: the 2.5 % zoom pulse (which started at full strength on the
+  beat) is replaced by `warpedProgress` in `renderer.ts`, a smooth surge of the move's progress
+  after each downbeat; path, start and end are unchanged. Unit-tested for continuity.
+- **Sweeps/tours** glide: `cameraAt` uses monotone (Fritsch–Carlson) cubic Hermite for tracks
+  with more than two keys, so the camera no longer stops at every intermediate key; it still rests
+  on dwell keys and the ends. `SWEEP_SPEED` 0.5 → 0.3 and `panSpeed` now also counts zoom
+  (0.5 × |log Δsize|), so fewer sweeps/tours qualify on short slides (they fall back to push).
+- **Depth wipe pop**: the threshold ramp started at 0, so far-plane pixels of the incoming photo
+  showed at ~50 % on frame one (looked like a mask cropping the outgoing photo). Ramp now starts at −f.
+- **Inspector tab** no longer flips back to Slide on every show/music edit (it switched whenever
+  the slide object was rebuilt; now only when the selection changes).
+- **Wheel** scrolls the storyboard and timeline horizontally (Ctrl+wheel still zooms the timeline).
+- **Edit framing**: the box squashed because the flex column shrank the aspect-ratio container
+  (`flex: none` now); resize handle follows horizontal drags too.
+- **Title cards**: `project.titles.cards` (`TitleCard`: id, text, `before` media hash). "+ Title
+  card" in the bottom bar adds one before the selected slide (or at the end); removing a title slide
+  (button or Delete) clears it at its source (`app.removeSelected`), so the planner no longer
+  resurrects it and the intro/end fields in Show can bring it back; editing a title slide's text
+  writes to the source (`app.setTitleText`). A card whose anchor photo is removed moves to the end.
+- **Focal tiers** without faces: depth-matte subject box (`DepthInfo.matte.box`, new analyses
+  only; no `DEPTH_VERSION` bump, older caches fall back) → saliency peaks ranked by score × √area.
+- **Music**: per-song "Use in show" toggle (`SongRef.off`, skipped by `musicGrid`), ↑/↓ order, and
+  a too-short / too-long message at the top of the Music tab.
+
+Not done, for the next session:
+
+- **Ghost cutouts behind people in 3D moves** (owner): there is no generative fill yet (M6). The
+  plate is the pull-push blur of the hole's rim, which reads as a smudged silhouette when parallax
+  reveals it. Options: a classical PatchMatch/exemplar inpainting in the worker (no model, no
+  licence issue), or MI-GAN/LaMa (check licences, person guard per spec §1.2). Until then,
+  consider lowering ARC/CRANE/INFLATE further or dropping 3D on photos with large mattes.
+- **Music management** beyond the above: drag reorder, auditioning a song from the list, adding
+  songs from the Music tab (today: library drawer only), suggesting how many photos/songs fit.
+- Title cards: no per-card subtitle or style (title vs chapter) choice; automatic chapter cards are
+  still the Show toggle.
+- Framing editor edits only the first and last keys and shows nothing of the 3D camera.
+- Check by eye on real photos whether sweeps still feel fast; `SWEEP_SPEED` and the zoom weight in
+  `panSpeed` are the knobs. Look for other pops: fly-through starts A's zoom at 1.0 (fine), but the
+  whip's blur and half-frame offset may still read as a jump.
+
+## Session 4 (2026-11-11): the 3D effect rebuilt (mattes, plates, two layers)
+
+The owner found the first 3D "jagged and distorted". Cause: one mesh carried the whole photo, so
+every depth edge stretched triangles into a sawtooth, the depth texture was 8-bit, the offscreen
+targets had no multisampling, and the arc/crane amplitudes asked for far more parallax than one
+layer can bear. What changed (all verified on frame dumps of the owner's example photos, see
+`tests/e2e/frames.spec.ts` → `test-results/frames/`; a copy of the old frames is in
+`test-results/frames-before/` locally):
+
+- **Layers from depth, no new model** (`src/lib/analysis/layers.ts`, unit-tested): the depth
+  stage now also builds a subject matte (soft depth threshold in the histogram valley between the
+  subject box and its surroundings; Otsu's split as the fallback, so pets and statues work), a
+  background plate (pull-push pyramid fill of the hole, colour and depth together) and a smoothed
+  background depth. Files: `platedepth.u16.gz` (always), `matte.u8.gz` (two planes: tight and
+  grown alpha) and `plate.webp` (alpha = hole) when a layer exists. `DEPTH_VERSION` is 2, so old
+  caches re-run depth. `DepthInfo.matte` carries the threshold and cover; `sep`/`pivot` are now
+  measured on the matte and the probe grid comes from the background depth (so the edge clamp
+  matches the layer that actually covers the frame edge).
+- **Renderer** (`src/lib/render/renderer.ts`): maps texture is RGBA16F (R background depth, G
+  subject depth extended past the matte by pull-push and lightly smoothed, B grown alpha, A tight
+  alpha); the background layer blends the plate over the photo inside the hole; the subject layer
+  draws only when a plate exists; grid 128 (64 lite) with 32-bit indices and alternating
+  diagonals; 4× MSAA render targets with a second colour attachment holding screen-space depth;
+  depth wipe (far first, subject last) and fly-through (outgoing zooms in, planes dissolve nearest
+  first) in the composite pass; `renderer.debug = 1|2` shows a target's depth for frame dumps.
+  `AssetLoader.loadLayerTextures` is shared with the exporter.
+- **Planner**: ARC 0.24 → 0.09, CRANE 0.15 → 0.07, INFLATE 0.14 → 0.07, DOLLY 0.12 → 0.1;
+  Cinematic `depthAmount` 1.2 → 1; arc/crane/inflate suitability halves without a matte.
+- **Stall watchdog** (`queue.ts`): multi-threaded ONNX Runtime session creation hung forever in
+  headless Chromium 158 with cross-origin isolation on (the preview server inherits the dev
+  COOP/COEP headers, so the Playwright runs are isolated). A depth job that sends nothing for 90 s
+  now gets its worker terminated and is retried single-threaded; threads stay off for the session.
+  Whether threads work in real browsers is still unknown.
+- **Harness**: `window.lantern` (the app state) and `window.lanternPlayer` are exposed for tests;
+  `tests/e2e/frames.spec.ts` forces treatments (`FRAMES_TREATMENTS=arc,crane`), transitions
+  (`FRAMES_TRANSITION=depthWipe|flyThrough`) and dumps frames, depth maps, mattes and plates.
+
+What still shows: the pull-push fill is a blur of the rim, so a strong parallax reveals a soft
+band around subjects (an inpainting model, M6, is the fix; amplitudes are moderate meanwhile);
+several people at different depths share one subject layer, so the step between them is a gentle
+warp; depth-threshold mattes cut continuous surfaces (a floor at the subject's feet) with a soft
+seam. Disc DOF is still the mip-bias blur.
 
 ## Session 3 (2026-11-10): looks removed, depth stage built
 
@@ -67,9 +154,9 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 | Planner | `src/lib/planner/*.ts` | Passes 1–7: curate (pHash complete-linkage groups, quality flags, chapters), order (time/story/manual/shuffle + variety), group (portrait pairs, title cards), durations, music fit (beat-grid DP with locks and mismatch report), treatments (hold/push/pull/pan/sweep/tour laid out and secured for edge + face safety; depth treatments coded but gated on depth data that does not exist yet), transitions, styles as data. `compile()` produces the Timeline. 13 unit tests. |
 | Music | `src/lib/audio/` | Own DSP (no AGPL): onset, tempo, Ellis beats, downbeats, Foote sections, energy, edges, loudness, waveform. Worker. Mixer graph shared by preview (AudioContext) and export (OfflineAudioContext). 3 unit tests with synthetic click tracks. |
 | Media | `src/lib/media/`, `src/lib/store/` | xxh3 hashing, EXIF (exifr), decode with orientation, proxies to OPFS (IndexedDB fallback), IndexedDB schema per spec §8.1, importer with folder walking and directory handles. |
-| Analysis | `src/lib/analysis/` | Basics (pHash, sharpness, exposure, colourfulness, edge density, flags) and spectral-residual saliency at import; MediaPipe faces (tiled) and Depth Anything V2 Small (ORT WASM) in a priority queue with versioned, cached results. |
+| Analysis | `src/lib/analysis/` | Basics (pHash, sharpness, exposure, colourfulness, edge density, flags) and spectral-residual saliency at import; MediaPipe faces (tiled) and Depth Anything V2 Small (ORT WASM) plus depth-derived layers (`layers.ts`: matte, plate, background depth) in a priority queue with versioned, cached results and a stall watchdog. |
 | Models | `src/lib/models/` | Registry with pinned URL/size/SHA-256/license, checksummed fetch into Cache Storage, Settings page lists and deletes them. |
-| Renderer | `src/lib/render/` | WebGL2, pure function of time, mesh + letterbox + composite transitions + captions + beat pulse; asset window loader; preview Player with audio-locked clock. |
+| Renderer | `src/lib/render/` | WebGL2, pure function of time, two depth-displaced meshes (background with plate, subject with matte alpha) + letterbox + MSAA targets with depth attachment + composite transitions (incl. depth wipe, fly-through) + captions + beat pulse; asset window loader (photos, maps, plates); preview Player with audio-locked clock. |
 | Export | `src/lib/export/export.ts` | OffscreenCanvas + Mediabunny (codec probing, MP4/WebM, save picker or download), offline audio mix, optional 4× motion blur, wake lock in the dialog. MediaRecorder fallback helper exists but is not wired to the UI. |
 | UI | `src/app/*.svelte` | Start (drop zone, recents, tier line), Make (style cards, songs, aspect), Editor (preview, storyboard with drag reorder and multi-select, timeline with waveform/beats/sections and duration drag, inspector for slide/show/music, framing editor, library drawer, export dialog, undo/redo, autosave, shortcuts, locks, Try another, Why?), Settings, Bench. |
 
@@ -82,7 +169,7 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 | M2 | Music | Done: analysis, fit, several songs with crossfades, mix in preview, basic corrections (tempo alt, grid shift, trims), 30-minute song limit, early fade-out when music outlasts photos. No drag-to-correct sections, no section looping for "music to show", beat accuracy unmeasured on annotated songs. |
 | M3 | Editor | Largely done. Missing: project package (.lantern zip) export/import, batch-apply UI beyond multi-select edits, phone layout polish. |
 | M4 | Export | Core pipeline done and verified with ffprobe. Missing: golden-frame and A/V sync tests, worker-side rendering (export runs on the main thread with an OffscreenCanvas), WebCodecs frame-accurate video decode (uses `<video>` seeks). |
-| M5 | Depth Space | Started: depth stage, maps texture, 3D treatments active when depth and a style with `depthShare > 0` allow. Missing: mattes/two layers, depth transitions, disc DOF, WebGPU provider, threshold tuning. |
+| M5 | Depth Space | Mostly done: depth stage, depth-derived mattes and pull-push plates, two-layer meshes, depth wipe and fly-through, 3D treatments when depth and a style with `depthShare > 0` allow. Missing: disc DOF, a segmentation model for finer mattes (full tier), WebGPU provider, GPU timings, threshold tuning on more photos. |
 | M6 | Fills | Not started. |
 | M7 | Video | Partial: videos import, poster thumbnails, clip pick heuristics and ducking envelope exist; no video scan stage, so highlight picking uses the centre of the clip. |
 | M8 | Polish | Not started (people clusters, flipbooks, PWA icons, accessibility pass). |
@@ -102,7 +189,8 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 - The CSP allows `storage.googleapis.com` for the MediaPipe weights until a Hugging Face repo exists (spec §2.1, §15 Q4).
 - Export runs on the main thread; a long export blocks the UI. Move the renderer into a worker (OffscreenCanvas transfer) next.
 - No CLIP: `story` order uses time plus face heuristics; tags are empty.
-- Mattes, plates, person guard: none yet. Depth exists; without a matte the whole photo is one displaced layer, so large 3D amplitudes stretch pixels at depth edges (keep `depthStrength` moderate until mattes land).
+- Plates are classical pull-push fills (blurry); no inpainting model and no person guard yet (nothing generative exists, so the guard has nothing to check). The parallax band around subjects shows the blur.
+- Multi-threaded ONNX Runtime hung in headless Chromium; the watchdog falls back to one thread. Unverified in real browsers.
 - Playwright uses SwiftShader; GPU performance is unmeasured. Chrome headless had no AAC encoder (Opus-in-MP4 was used).
 - The `.lantern` project package is not implemented.
 - The e2e test skips the picker and uses the download path.
@@ -111,7 +199,8 @@ Fixes, all verified in headless Chromium against that file and a 4-minute excerp
 
 1. Verify cross-origin isolation and model fetches on the deployed Pages site (spec §2.1); the owner reports the deploy works, isolation is unchecked.
 2. Measure beat accuracy on real songs (spec §6.2 targets) and GPU render/export speed; record in spec §13.1.
-3. M5 Depth Space, continued: look at real 3D moves on a GPU and tune `quality`/`sep` gates and amplitudes; mattes (two-layer mesh), depth wipe and fly-through, disc DOF; try the WebGPU provider with the fp16 export for speed.
+3. M5 Depth Space, finishing: look at real 3D moves on a GPU (the owner's machine) and tune `quality`/`sep` gates and amplitudes by eye; disc DOF; try the WebGPU provider with the fp16 export for speed; consider a person segmenter (MediaPipe multiclass, Apache-2.0) or BiRefNet-lite (MIT, full tier) to refine the depth-derived matte where people are present.
+3b. M6 Fills: an inpainting model (MI-GAN or LaMa) for plates and margins would remove the blurry band the pull-push fill leaves in the parallax zone; it is the biggest remaining visual gain for 3D.
 4. CLIP ViT-B/32 image tower + build-time tag embeddings (`npm run tags` is declared but the script does not exist yet).
 5. Move export rendering into a worker; add golden-frame and A/V sync tests.
 6. Project packages, people clusters, flipbooks, video scan stage.

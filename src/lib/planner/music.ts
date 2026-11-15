@@ -21,6 +21,7 @@ export function musicGrid(project: Project, analyses: Map<string, MusicAnalysis>
   const songs: MusicGrid["songs"] = [];
   let at = 0;
   for (const ref of project.songs) {
+    if (ref.off) continue; // loaded but not used in the show
     const a = analyses.get(ref.hash);
     if (!a) continue;
     const tin = Math.max(0, ref.trimIn), tout = ref.trimOut > 0 ? Math.min(a.duration, ref.trimOut) : a.duration;

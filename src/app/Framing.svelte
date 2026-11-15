@@ -20,7 +20,7 @@
     const r = el.getBoundingClientRect();
     const dx = ((e.clientX - drag.x0) / r.width) * ia, dy = (e.clientY - drag.y0) / r.height;
     const v = drag.v0;
-    const nv: [number, number, number] = drag.scale ? [v[0], v[1], Math.max(0.1, v[2] + dy)] : [v[0] + dx, v[1] + dy, v[2]];
+    const nv: [number, number, number] = drag.scale ? [v[0], v[1], Math.max(0.1, v[2] + (Math.abs(dx / aspect) > Math.abs(dy) ? dx / aspect : dy))] : [v[0] + dx, v[1] + dy, v[2]];
     slide.treatment.keys[drag.k].view = clampViewFlat(nv[0], nv[1], nv[2], ia, aspect);
     app.project = app.project;
   }
@@ -46,7 +46,7 @@
 <p class="dim small">Drag a rectangle to move it; drag its corner to resize. Changes lock this slide's motion.</p>
 
 <style>
-  .fr { position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; user-select: none; touch-action: none; }
+  .fr { flex: none; position: relative; width: 100%; background: #000; border-radius: 8px; overflow: hidden; user-select: none; touch-action: none; }
   .box { position: absolute; border: 2px solid var(--accent); box-sizing: border-box; cursor: move; }
   .box.end { border-color: var(--accent2); border-style: dashed; }
   .box span { position: absolute; left: 2px; top: 0; font-size: 10px; background: #000a; padding: 0 4px; }
