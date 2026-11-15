@@ -39,7 +39,13 @@ Not yet seen on a GPU or in a real (non-headless) browser by the owner.
 - `frames.spec.ts`: `FRAMES_FILL=1` turns fill on, prints `[fill]` rejections, dumps `NN-people.png`,
   `NN-plategen.webp`, `NN-plategen.rejected.webp`. Pass `--timeout 1500000` (LaMa is slow).
 
-Next for M6: an 8-bit LaMa (~55 MB) needs an owner-hosted HF repo (pinned weights only); WebGPU
+Smaller LaMa (2026-11-14, after the commit): 8-bit dynamic quantization is unusable (green
+checkerboard, error > 100 levels). fp16-stored weights with load-time Casts to fp32
+(`convert_fp16_weights.py`) give 106 MB, SHA-256 `e631637d…ecab`, mean error 0.56, same speed. The
+owner is uploading it to an HF repo under `HiggityPiggity`; once there, point registry `lama-512`
+at `resolve/<commit>/lama_fp16w.onnx` with that size and SHA-256.
+
+Next for M6: WebGPU
 provider for speed; mirrored crops at frame edges (spec §4.6); margins / Extend; the
 "show generated pixels" overlay; plate depth from a depth pass on the plate. Undo of the fill
 switch does not re-run `applyFill` (switch it again).
